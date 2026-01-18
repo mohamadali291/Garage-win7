@@ -1,0 +1,447 @@
+
+    <!-- MAIN APP -->
+    <div class="container" id="app-root" style="display:none;">
+        <h1>🔧 Garage Management System</h1>
+        
+        <div class="tabs">
+            <button class="tab active" onclick="showTab('clients', this)">Clients</button>
+            <button class="tab" onclick="showTab('cars', this)">Cars</button>
+            <button class="tab" onclick="showTab('items', this)">Items</button>
+            <button class="tab" onclick="showTab('invoices', this)">Invoices</button>
+            <button class="tab" onclick="showTab('suppliers', this)">Suppliers</button>
+            <button class="tab" onclick="showTab('employees', this)">Employees</button>
+            <button class="tab" onclick="showTab('reports', this)">Reports</button>
+            <button class="tab" onclick="showTab('settings', this)">Settings</button>
+        </div>
+
+        <!-- Clients Tab -->
+        <div id="clients" class="tab-content active">
+            <div class="header-actions">
+                <h2>Clients</h2>
+                <div class="search-box">
+                    <input type="text" placeholder="Search by name/phone OR car plate/VIN/chassis..." oninput="onClientSearch(this.value)">
+                </div>
+                <button class="btn btn-primary" data-admin-only="1" onclick="openModal('client')">+ Add Client</button>
+            </div>
+            <table id="clientsTable">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Phone</th>
+                        <th>Email</th>
+                        <th>Address</th>
+                        <th>Balance</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+
+            <div id="clientsPager" class="pager" style="display:flex; align-items:center; gap:8px; margin-top:10px; flex-wrap:wrap;">
+                <button id="clientsPrevBtn" class="btn btn-small" onclick="clientPrevPage()">◀ Prev</button>
+                <span id="clientsPageInfo" style="font-weight:600;">Page 1</span>
+                <button id="clientsNextBtn" class="btn btn-small" onclick="clientNextPage()">Next ▶</button>
+
+                <span style="margin-left:12px; opacity:0.8;" id="clientsCountInfo"></span>
+
+                <span style="margin-left:12px;">Per page:</span>
+                <select id="clientsPageSize" onchange="setClientPageSize(this.value)" style="padding:6px; border:1px solid #ddd; border-radius:6px;">
+                    <option value="10" selected>10</option>
+                    <option value="25">25</option>
+                    <option value="50">50</option>
+                </select>
+            </div>
+
+
+                </div>
+
+
+        <!-- Cars Tab -->
+        <div id="cars" class="tab-content">
+            <div class="header-actions">
+                <h2>Cars</h2>
+                <div class="search-box">
+                    <input type="text" placeholder="Plate, VIN or model + year (e.g. CRV 2007)..." oninput="onCarSearch(this.value)">
+                </div>
+                <button class="btn btn-primary" data-admin-only="1" onclick="openModal('car')">+ Add Car</button>
+            </div>
+            <table id="carsTable">
+                <thead>
+                    <tr>
+                        <th>Client</th>
+                        <th>Make</th>
+                        <th>Model</th>
+                        <th>Year</th>
+                        <th>Plate</th>
+                        <th>VIN</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+            <div id="carsPager" class="pager" style="display:flex; align-items:center; gap:8px; margin-top:10px; flex-wrap:wrap;">
+                <button id="carsPrevBtn" class="btn btn-small" onclick="carPrevPage()">◀ Prev</button>
+                <span id="carsPageInfo" style="font-weight:600;">Page 1</span>
+                <button id="carsNextBtn" class="btn btn-small" onclick="carNextPage()">Next ▶</button>
+
+                <span style="margin-left:12px; opacity:0.8;" id="carsCountInfo"></span>
+
+                <span style="margin-left:12px;">Per page:</span>
+                <select id="carsPageSize" class="btn btn-small" onchange="setCarPageSize(this.value)">
+                    <option value="10">10</option>
+                    <option value="25">25</option>
+                    <option value="50">50</option>
+                    <option value="100">100</option>
+                </select>
+            </div>
+
+        </div>
+
+               <!-- Items Tab -->
+<div id="items" class="tab-content">
+    <div class="header-actions">
+        <h2>Items & Services</h2>
+
+        <div class="search-box">
+            <input type="text"
+                   placeholder="Search by name, part number, or barcode..."
+                   oninput="onItemSearch(this.value)">
+        </div>
+
+        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+            <button class="btn btn-primary" data-admin-only="1" onclick="openModal('item')">+ Add Item</button>
+
+            <!-- HIDDEN FILE INPUT FOR EXCEL IMPORT -->
+            <input
+                type="file"
+                id="itemsExcelInput"
+                accept=".xlsx,.xls,.csv"
+                style="display:none"
+                onchange="handleItemsExcelImport(event)"
+            >
+
+            <button id="importExcelBtn" class="btn btn-success"type="button"
+                onclick="document.getElementById('itemsExcelInput').click()"
+            >
+                Import Excel
+            </button>
+            <button id="transferBtn" class="btn btn-warning" type="button" onclick="openTransferModal()">
+                Transform to Main
+            </button>
+
+            <button id="receiveBtn" class="btn btn-info" type="button" onclick="toggleNotifications(true)">
+                Receive (Saadeyat)
+            </button>
+
+        </div>
+        <div id="notificationsPanel" style="display:none; margin-top:10px; padding:10px; border:1px solid #ddd; border-radius:10px; background:#fff;">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+                <h3 style="margin:0;">📦 Saadeyat Transfers</h3>
+                <button class="btn btn-secondary" type="button" onclick="toggleNotifications(false)">Close</button>
+            </div>
+            <div id="notificationsSummary" style="margin-top:8px; font-size:14px; color:#444;"></div>
+            <div id="notificationsList" style="margin-top:10px;"></div>
+        </div>
+
+    </div>
+
+    <!-- ✅ THIS TABLE WAS MISSING -->
+    <!-- Tags Manager (fixed tags for items/invoice filter) -->
+    <div id="items-tags-manager" style="margin:10px 0; padding:10px; border:1px solid #ddd; border-radius:10px; background:#fff;">
+        <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+            <h3 style="margin:0;">Tags</h3>
+            <input type="text" id="fixedTagInput" placeholder="Add a tag (e.g. CRV 2005)" style="flex:1; min-width:200px;">
+            <button class="btn btn-success" data-admin-disable="1" type="button" onclick="addFixedTag()">+ Add Tag</button>
+        </div>
+        <div id="fixedTagsList" style="margin-top:8px;"></div>
+    </div>
+
+    <table id="itemsTable">
+        <thead>
+            <tr>
+  <th>Name</th>
+  <th>Part #</th>
+  <th>Location</th>
+
+  <th>Selling Price</th>
+  <th>Cost Price</th>
+
+  <th>Quantity</th>
+  <th>Low Stock Alert</th>
+  <th>Photo</th>
+  <th>Description</th>
+  <th>Actions</th>
+</tr>
+
+        </thead>
+        <tbody></tbody>
+    </table>
+            <div id="itemsPager" class="pager" style="display:flex; align-items:center; gap:8px; margin-top:10px; flex-wrap:wrap;">
+                <button id="itemsPrevBtn" class="btn btn-small" onclick="itemPrevPage()">◀ Prev</button>
+                <span id="itemsPageInfo" style="font-weight:600;">Page 1</span>
+                <button id="itemsNextBtn" class="btn btn-small" onclick="itemNextPage()">Next ▶</button>
+
+                <span style="margin-left:12px; opacity:0.8;" id="itemsCountInfo"></span>
+
+                <span style="margin-left:12px;">Per page:</span>
+                <select id="itemsPageSize" class="btn btn-small" onchange="setItemPageSize(this.value)">
+                    <option value="10">10</option>
+                    <option value="25">25</option>
+                    <option value="50">50</option>
+                    <option value="100">100</option>
+                </select>
+            </div>
+
+</div>
+
+
+        <!-- Invoices Tab -->
+        <div id="invoices" class="tab-content">
+            <div class="header-actions">
+                <h2>Invoices</h2>
+                <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                    <div class="pagination">
+                        <button class="btn btn-small" id="invoicesPrevPage" onclick="changeInvoicePage(-1)">&lt;</button>
+                        <span id="invoicesPageInfo">Page 1</span>
+                        <button class="btn btn-small" id="invoicesNextPage" onclick="changeInvoicePage(1)">&gt;</button>
+                        <select id="invoicesPageSizeSelect" onchange="setInvoicePageSize(this.value)">
+                            <option value="10" selected>10</option>
+                            <option value="25">25</option>
+                            <option value="50">50</option>
+                            <option value="100">100</option>
+                        </select>
+                    </div>
+                    <button class="btn btn-primary" data-admin-only="1" onclick="openModal('invoice')">+ Create Invoice</button>
+                </div>
+            </div>
+            <table id="invoicesTable">
+                <thead>
+                    <tr>
+                        <th>Invoice #</th>
+                        <th>Date</th>
+                        <th>Client</th>
+                        <th>Car</th>
+                        <th>Total</th>
+                        <th>Paid</th>
+                        <th>Remaining</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+
+        <!-- Suppliers Tab -->
+        <div id="suppliers" class="tab-content">
+            <div class="header-actions">
+                <h2>Suppliers</h2>
+                <button class="btn btn-primary" data-admin-only="1" onclick="openModal('supplier')">+ Add Supplier</button>
+            </div>
+            <table id="suppliersTable">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Phone</th>
+                        <th>Email</th>
+                        <th>Company</th>
+                        <th>Notes</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+
+        <!-- Employees Tab -->
+        <div id="employees" class="tab-content">
+            <div class="header-actions">
+                <h2>Employees</h2>
+                <button class="btn btn-primary" data-admin-only="1" onclick="openModal('employee')">+ Add Employee</button>
+            </div>
+            <table id="employeesTable">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Phone</th>
+                        <th>Email</th>
+                        <th>Role</th>
+                        <th>Notes</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+
+        <!-- Reports Tab -->
+        <div id="reports" class="tab-content">
+            <div class="header-actions">
+                <h2>Reports</h2>
+            </div>
+            <div class="report-filters">
+                <div class="form-group">
+                    <label for="reportType">Report Type</label>
+                    <select id="reportType" onchange="onReportTypeChange()">
+                        <option value="clientBalances">Client Balances</option>
+                        <option value="salesSummary">Sales Summary</option>
+                        <option value="itemSales">Sales of Items</option>
+                        <option value="invoiceList">Invoice List</option>
+                        <option value="inventory">Inventory</option>
+                        <option value="lowStock">Low Stock</option>
+                        <option value="clientHistory">Client History</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="reportStartDate">Start Date</label>
+                    <input type="date" id="reportStartDate">
+                </div>
+                <div class="form-group">
+                    <label for="reportEndDate">End Date</label>
+                    <input type="date" id="reportEndDate">
+                </div>
+                <div class="form-group">
+                    <label for="reportStatus">Status</label>
+                    <select id="reportStatus">
+                        <option value="all">All</option>
+                        <option value="paid">Paid</option>
+                        <option value="unpaid">Unpaid</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="reportClientId">Client</label>
+                    <select id="reportClientId">
+                        <option value="">All Clients</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <button class="btn btn-primary" onclick="generateReport()">Generate</button>
+                </div>
+            </div>
+            <div id="reportArea"></div>
+        </div>
+
+        <!-- Settings Tab -->
+        <div id="settings" class="tab-content">
+            <div class="header-actions">
+                <h2>Settings</h2>
+            </div>
+
+            <div class="form-group">
+                <label>Logged in user</label>
+                <input type="text" id="settings-username-display" readonly>
+            </div>
+
+            <h3 style="margin-top:15px; margin-bottom:10px;">Change Username & Password</h3>
+
+            <div class="form-group">
+                <label>New Username</label>
+                <input type="text" id="settings-new-username" placeholder="Leave empty to keep current">
+            </div>
+            <div class="form-group">
+                <label>Current Password</label>
+                <input type="password" id="settings-current-password">
+            </div>
+            <div class="form-group">
+                <label>New Password</label>
+                <input type="password" id="settings-new-password">
+            </div>
+            <div class="form-group">
+                <label>Confirm New Password</label>
+                <input type="password" id="settings-confirm-password">
+            </div>
+            <div class="form-group">
+                <button class="btn btn-primary" data-admin-disable="1" onclick="changePassword()">Save Changes</button>
+            </div>
+
+            
+            <!-- NEW: WAREHOUSES SETTINGS -->
+            <h3 style="margin-top:20px; margin-bottom:10px;">Warehouses</h3>
+
+            <div class="form-group">
+                <label>Add Warehouse</label>
+                <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                    <input type="text" id="newWarehouseName" placeholder="Warehouse name (e.g. Beirut, Tripoli)" style="flex:1; min-width:220px;">
+                    <button class="btn btn-success" data-admin-disable="1" type="button" onclick="addWarehouse()">+ Add</button>
+                </div>
+                <div style="font-size:12px; color:#666; margin-top:6px;">
+                    The first warehouse is the default (used for old data + Excel imports).
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label>Manage Warehouses</label>
+                <div id="warehousesList"></div>
+            </div>
+
+            <hr style="margin:15px 0;">
+<!-- NEW: LOGO SETTINGS -->
+            <h3 style="margin-top:20px; margin-bottom:10px;">Garage Logo (for Invoices)</h3>
+
+            <div class="form-group">
+                <label>Current Logo Preview</label>
+                <img id="settings-logo-preview"
+                     src=""
+                     alt="Logo preview"
+                     style="max-height:80px; display:none; border:1px solid #ddd; padding:4px; border-radius:4px;">
+            </div>
+
+            <div class="form-group">
+                <label>Upload New Logo (PNG/JPEG)</label>
+                <input type="file" id="settings-logo-file" data-admin-disable="1" accept="image/*">
+            </div>
+
+            <div class="form-group">
+                <button class="btn btn-danger" data-admin-disable="1" type="button" id="settings-logo-remove">Remove Logo</button>
+            </div>
+
+            <hr style="margin:15px 0;">
+
+            <!-- INVOICE HEADER SETTINGS -->
+            <h3 style="margin-top:20px; margin-bottom:10px;">Invoice Header</h3>
+            <div class="form-group">
+                <label>Line 1 (Company Name)</label>
+                <input type="text" id="invoice-header-line1" placeholder="e.g. Hamdan EV Tronics">
+            </div>
+            <div class="form-group">
+                <label>Line 2 (Address)</label>
+                <input type="text" id="invoice-header-line2" placeholder="e.g. Kornish Al Mazraa Facing Al Daman&quot;NSSF&quot;">
+            </div>
+            <div class="form-group">
+                <label>Line 3 (Phone)</label>
+                <input type="text" id="invoice-header-line3" placeholder="e.g. 71334040 / 03334040">
+            </div>
+            <div class="form-group">
+                <button class="btn btn-primary" data-admin-disable="1" type="button" onclick="saveInvoiceHeaderSettings()">Save Invoice Header</button>
+            </div>
+
+            <hr style="margin:15px 0;">
+
+            <div class="form-group">
+                <button class="btn btn-warning" onclick="logout()">Log Out</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal -->
+    <div id="modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modalTitle">Modal</h3>
+                <span class="close" onclick="closeModal()">&times;</span>
+            </div>
+            <div id="modalBody"></div>
+        </div>
+    </div>
+<!-- Excel parsing library (SheetJS). Needs internet the first time to load -->
+
+<!-- ======= ALERT MODAL (for uiError/uiConfirm) ======= -->
+    <div id="alertModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="alertTitle">Message</h3>
+                <span class="close" onclick="closeAlertModal()">&times;</span>
+            </div>
+            <div class="modal-body" id="alertBody"></div>
+        </div>
+    </div>
