@@ -1,0 +1,45 @@
+{
+  "name": "garage-management-system",
+  "version": "1.0.0",
+  "description": "Garage Management System - Local Desktop App with Cloud Sync",
+  "main": "main_with_roles.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder"
+  },
+  "author": "Hamdan EV Tronics",
+  "license": "ISC",
+  "build": {
+    "appId": "com.hamdan.garage",
+    "productName": "Hamdan Garage Manager",
+    "files": [
+      "**/*",
+      "!node_modules/.cache/**",
+      "!dist/**"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Hamdan Garage Manager"
+    }
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.0.2",
+    "electron": "^19.1.9",
+    "electron-builder": "^26.0.12"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.5.0",
+    "sqlite3": "^5.1.7",
+    "xlsx": "^0.18.5"
+  }
+}
