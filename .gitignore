@@ -2,6 +2,10 @@ node_modules/
 dist/
 out/
 build/
+backend/node_modules/
+frontend/node_modules/
+backend/data/
+frontend/dist/
 
 *.log
 npm-debug.log*
