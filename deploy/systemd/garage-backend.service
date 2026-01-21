@@ -1,0 +1,32 @@
+[Unit]
+Description=Garage Sync Backend (Express + SQLite)
+After=network.target
+
+[Service]
+Type=simple
+
+# Adjust user/group and paths for your VPS
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/garage-backend
+
+Environment=NODE_ENV=production
+Environment=PORT=4000
+Environment=CORS_ORIGIN=*
+Environment=SYNC_ROLE=server
+Environment=DB_PATH=/var/lib/garage/garage.sqlite
+
+ExecStart=/usr/bin/node /opt/garage-backend/src/server.js
+Restart=always
+RestartSec=2
+
+# Hardening (safe defaults; tweak if needed)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/garage
+
+[Install]
+WantedBy=multi-user.target
+

@@ -97,3 +97,10 @@ Each laptop (local backend + local SQLite):
 3. Trigger a manual sync via `POST /api/sync/run` (admin login required).
 
 Check status with `GET /api/sync/status` and conflicts with `GET /api/sync/conflicts`.
+
+### Deployment templates
+
+See [`deploy/README.md`](deploy/README.md) for:
+
+- VPS templates (systemd, Nginx, backup script, env example)
+- Laptop env example for client mode
