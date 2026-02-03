@@ -78,6 +78,10 @@
             background: #2563eb;
             color: white;
         }
+        .btn-secondary {
+            background: #64748b;
+            color: white;
+        }
         .btn-danger {
             background: #dc2626;
             color: white;

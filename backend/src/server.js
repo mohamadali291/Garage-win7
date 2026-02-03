@@ -56,7 +56,23 @@ app.set("etag", false);
 
 getDb();
 
-app.use(cors({ origin: CORS_ORIGIN }));
+function buildCorsOriginOption(raw) {
+  const value = String(raw || "").trim();
+  if (!value || value === "*") return "*";
+  const parts = value
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (parts.length === 0) return "*";
+  if (parts.includes("*")) return "*";
+  return function corsOrigin(origin, cb) {
+    if (!origin) return cb(null, true);
+    if (parts.includes(origin)) return cb(null, true);
+    return cb(new Error("Not allowed by CORS"), false);
+  };
+}
+
+app.use(cors({ origin: buildCorsOriginOption(CORS_ORIGIN) }));
 app.use(express.json({ limit: "12mb" }));
 app.use(morgan("dev"));
 app.use("/api", (req, res, next) => {
