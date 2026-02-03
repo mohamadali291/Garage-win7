@@ -11,7 +11,7 @@
     "frontend:build": "cd frontend && npm run build",
     "backend:install": "cd backend && npm install",
     "frontend:install": "cd frontend && npm install",
-    "postinstall": "npm run backend:install && npm run frontend:install",
+    "postinstall": "npm run backend:install && npm run frontend:install && electron-builder install-app-deps",
     "dist": "npm run electron:build"
   },
   "author": "Hamdan EV Tronics",
@@ -32,7 +32,10 @@
       {
         "from": "backend",
         "to": "backend",
-        "filter": ["**/*", "!data/**"]
+        "filter": [
+          "**/*",
+          "!data/**"
+        ]
       }
     ],
     "directories": {
@@ -41,7 +44,8 @@
     },
     "win": {
       "target": "nsis",
-      "icon": "build/icon.ico"
+      "icon": "build/icon.ico",
+      "signAndEditExecutable": false
     },
     "nsis": {
       "oneClick": false,
@@ -71,7 +75,6 @@
   },
   "dependencies": {
     "better-sqlite3": "^12.5.0",
-    "sqlite3": "^5.1.7",
     "xlsx": "^0.18.5"
   }
 }
