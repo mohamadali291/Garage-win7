@@ -2,11 +2,17 @@
   "name": "garage-management-system",
   "version": "1.0.0",
   "description": "Garage Management System - Local Desktop App with Cloud Sync",
-  "main": "main_with_roles.js",
+  "main": "electron-main.js",
   "type": "commonjs",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder"
+    "electron:dev": "NODE_ENV=development electron .",
+    "electron:build": "npm run frontend:build && electron-builder",
+    "frontend:build": "cd frontend && npm run build",
+    "backend:install": "cd backend && npm install",
+    "frontend:install": "cd frontend && npm install",
+    "postinstall": "npm run backend:install && npm run frontend:install",
+    "dist": "npm run electron:build"
   },
   "author": "Hamdan EV Tronics",
   "license": "ISC",
@@ -14,22 +20,47 @@
     "appId": "com.hamdan.garage",
     "productName": "Hamdan Garage Manager",
     "files": [
-      "**/*",
-      "!node_modules/.cache/**",
-      "!dist/**"
+      "electron-main.js",
+      "backend/**/*",
+      "!backend/node_modules/**",
+      "!backend/data/**",
+      "frontend/dist/**/*",
+      "build/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "backend",
+        "to": "backend",
+        "filter": ["**/*", "!data/**"]
+      }
     ],
     "directories": {
-      "output": "dist"
+      "output": "dist",
+      "buildResources": "build"
     },
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "icon": "build/icon.ico"
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Hamdan Garage Manager"
+      "shortcutName": "Hamdan Garage Manager",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico"
+    },
+    "linux": {
+      "target": "AppImage",
+      "icon": "build/icon.png",
+      "category": "Utility"
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "build/icon.icns",
+      "category": "public.app-category.business"
     }
   },
   "devDependencies": {

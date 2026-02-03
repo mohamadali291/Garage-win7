@@ -1,4 +1,8 @@
-const API_BASE = import.meta.env.VITE_API_BASE || "";
+// Detect if running in Electron
+const isElectron = typeof window !== 'undefined' && window.isElectron === true;
+
+// Use localhost:4000 in Electron, otherwise use VITE_API_BASE
+const API_BASE = isElectron ? "http://localhost:4000" : (import.meta.env.VITE_API_BASE || "");
 const TOKEN_KEY = "garage_auth_token";
 const USER_KEY = "garage_current_user";
 
