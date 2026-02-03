@@ -5,6 +5,8 @@ const isElectron = typeof window !== 'undefined' && window.isElectron === true;
 const API_BASE = isElectron ? "http://localhost:4000" : (import.meta.env.VITE_API_BASE || "");
 const TOKEN_KEY = "garage_auth_token";
 const USER_KEY = "garage_current_user";
+const NO_LOGIN = true;
+const DEFAULT_USER = { username: "device", role: "main_admin" };
 
 const cache = {
   collections: {},
@@ -123,7 +125,6 @@ function fireAndForget(promise, label) {
 
 async function primeCache(force = false) {
   if (cache.ready && !force) return cache;
-  if (!getToken()) return cache;
 
   const data = await requestJson("GET", "/api/bootstrap");
   const collections = data && data.collections ? data.collections : {};
@@ -137,7 +138,7 @@ async function primeCache(force = false) {
 
 function ensurePrimePromise() {
   if (!primePromise) {
-    primePromise = getToken() ? primeCache() : Promise.resolve(cache);
+    primePromise = NO_LOGIN || getToken() ? primeCache() : Promise.resolve(cache);
   }
   return primePromise;
 }
@@ -145,8 +146,12 @@ function ensurePrimePromise() {
 function installGarageBridge() {
   if (window.garageDB && window.auth) return;
 
-  if (!getToken() && getStoredUser()) {
+  if (!getToken() && getStoredUser() && !NO_LOGIN) {
     setStoredUser(null);
+  }
+
+  if (NO_LOGIN && !getStoredUser()) {
+    setStoredUser(DEFAULT_USER);
   }
 
   window.__garagePrimeCache = () => ensurePrimePromise();
@@ -242,6 +247,14 @@ function installGarageBridge() {
 
   window.auth = {
     login: async (username, password) => {
+      if (NO_LOGIN) {
+        const user = DEFAULT_USER;
+        setStoredUser(user);
+        cache.ready = false;
+        primePromise = primeCache(true);
+        await primePromise;
+        return user;
+      }
       try {
         const data = await requestJson(
           "POST",
@@ -263,6 +276,7 @@ function installGarageBridge() {
       }
     },
     updateCredentials: async (currentUsername, currentPassword, newUsername, newPassword) => {
+      if (NO_LOGIN) return DEFAULT_USER;
       const data = await requestJson("POST", "/api/auth/update-credentials", {
         currentUsername,
         currentPassword,
@@ -274,6 +288,7 @@ function installGarageBridge() {
       return user;
     },
     changePassword: async (username, currentPassword, newPassword) => {
+      if (NO_LOGIN) return DEFAULT_USER;
       const data = await requestJson("POST", "/api/auth/update-credentials", {
         currentUsername: username,
         currentPassword,
@@ -282,18 +297,24 @@ function installGarageBridge() {
       return data && data.user ? data.user : null;
     },
     createUser: async (username, password, role) => {
+      if (NO_LOGIN) return null;
       const data = await requestJson("POST", "/api/users", { username, password, role });
       const user = data && data.user ? data.user : null;
       if (user) cache.users = cache.users.concat([user]);
       return user;
     },
     listUsers: async () => {
+      if (NO_LOGIN) {
+        cache.users = [];
+        return [];
+      }
       const data = await requestJson("GET", "/api/users");
       const users = data && data.users ? data.users : [];
       cache.users = users;
       return users;
     },
     logout: async () => {
+      if (NO_LOGIN) return;
       try {
         await requestJson("POST", "/api/auth/logout");
       } catch (e) {}

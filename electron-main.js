@@ -3,6 +3,23 @@ const { spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 
+const appIconPath = (() => {
+  const buildDir = path.join(__dirname, "build");
+  const icoPath = path.join(buildDir, "icon.ico");
+  const pngPath = path.join(buildDir, "icon.png");
+
+  if (process.platform === "win32" && fs.existsSync(icoPath)) {
+    return icoPath;
+  }
+  if (fs.existsSync(pngPath)) {
+    return pngPath;
+  }
+  if (fs.existsSync(icoPath)) {
+    return icoPath;
+  }
+  return null;
+})();
+
 let mainWindow = null;
 let backendProcess = null;
 let tray = null;
@@ -112,19 +129,24 @@ function stopBackend() {
 
 // Create the main application window
 function createWindow() {
-  mainWindow = new BrowserWindow({
+  const windowOptions = {
     width: 1400,
     height: 900,
     minWidth: 1000,
     minHeight: 700,
-    icon: path.join(__dirname, "build", "icon.png"),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
       webSecurity: true
     },
     show: false
-  });
+  };
+
+  if (appIconPath) {
+    windowOptions.icon = appIconPath;
+  }
+
+  mainWindow = new BrowserWindow(windowOptions);
 
   // Load the frontend
   if (isDev) {
@@ -158,11 +180,9 @@ function createWindow() {
 
 // Create system tray icon
 function createTray() {
-  const trayIconPath = path.join(__dirname, "build", "icon.png");
-  
   // Only create tray if icon exists
-  if (fs.existsSync(trayIconPath)) {
-    tray = new Tray(trayIconPath);
+  if (appIconPath) {
+    tray = new Tray(appIconPath);
     
     const contextMenu = Menu.buildFromTemplate([
       {

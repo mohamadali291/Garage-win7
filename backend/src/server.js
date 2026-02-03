@@ -51,6 +51,8 @@ const SYNC_ROLE = (process.env.SYNC_ROLE || "server").toLowerCase();
 const SYNC_REMOTE_URL = process.env.SYNC_REMOTE_URL || "";
 const SYNC_DEVICE_TOKEN = process.env.SYNC_DEVICE_TOKEN || "";
 const SYNC_INTERVAL_MS = Number(process.env.SYNC_INTERVAL_MS || 0);
+const NO_LOGIN =
+  String(process.env.NO_LOGIN || "").toLowerCase() === "true" || SYNC_ROLE === "client";
 
 app.set("etag", false);
 
@@ -89,6 +91,18 @@ function extractToken(req) {
 }
 
 function requireAuth(req, res, next) {
+  if (NO_LOGIN) {
+    req.user = {
+      id: "device",
+      username: "device",
+      role: "main_admin",
+      enabled: true,
+      isMainAdmin: true
+    };
+    req.token = null;
+    next();
+    return;
+  }
   const token = extractToken(req);
   const user = getUserByToken(token);
   if (!user) return res.status(401).json({ error: "Unauthorized" });
@@ -326,11 +340,12 @@ app.get("/api/bootstrap", requireAuth, (req, res) => {
     collections[name] = getAll(name);
   });
 
-  const users = req.user.role === "main_admin" ? listUsers() : [];
+  const users = NO_LOGIN ? [] : req.user.role === "main_admin" ? listUsers() : [];
   res.json({ collections, users });
 });
 
 app.post("/api/auth/login", (req, res) => {
+  if (NO_LOGIN) return res.status(404).json({ error: "Not available" });
   const { username, password } = req.body || {};
   const user = authenticateUser(username, password);
   if (!user) return res.status(401).json({ error: "Invalid credentials" });
@@ -340,11 +355,13 @@ app.post("/api/auth/login", (req, res) => {
 });
 
 app.post("/api/auth/logout", requireAuth, (req, res) => {
+  if (NO_LOGIN) return res.status(404).json({ error: "Not available" });
   deleteSession(req.token);
   res.json({ ok: true });
 });
 
 app.post("/api/auth/update-credentials", requireAuth, (req, res) => {
+  if (NO_LOGIN) return res.status(404).json({ error: "Not available" });
   const { currentUsername, currentPassword, newUsername, newPassword } = req.body || {};
   if (!currentUsername || !currentPassword) {
     return res.status(400).json({ error: "Current username and password are required" });
@@ -363,11 +380,13 @@ app.post("/api/auth/update-credentials", requireAuth, (req, res) => {
 });
 
 app.get("/api/users", requireAuth, (req, res) => {
+  if (NO_LOGIN) return res.status(404).json({ error: "Not available" });
   if (req.user.role !== "main_admin") return res.status(403).json({ error: "Forbidden" });
   res.json({ users: listUsers() });
 });
 
 app.post("/api/users", requireAuth, (req, res) => {
+  if (NO_LOGIN) return res.status(404).json({ error: "Not available" });
   if (req.user.role !== "main_admin") return res.status(403).json({ error: "Forbidden" });
   const { username, password, role } = req.body || {};
   try {
@@ -465,6 +484,7 @@ app.delete("/api/collections/:collection/:id", requireAuth, requireWriteAccess, 
 });
 
 app.post("/api/admin/devices", requireAuth, (req, res) => {
+  if (NO_LOGIN) return res.status(404).json({ error: "Not available" });
   if (req.user.role !== "main_admin") return res.status(403).json({ error: "Forbidden" });
   const label = req.body && req.body.label ? String(req.body.label) : null;
   const device = createDevice(label);
@@ -472,6 +492,7 @@ app.post("/api/admin/devices", requireAuth, (req, res) => {
 });
 
 app.post("/api/admin/devices/revoke", requireAuth, (req, res) => {
+  if (NO_LOGIN) return res.status(404).json({ error: "Not available" });
   if (req.user.role !== "main_admin") return res.status(403).json({ error: "Forbidden" });
   const deviceId = req.body && req.body.deviceId ? String(req.body.deviceId) : null;
   if (!deviceId) return res.status(400).json({ error: "deviceId is required" });

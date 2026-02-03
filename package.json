@@ -70,11 +70,11 @@
   "devDependencies": {
     "@electron/rebuild": "^3.6.0",
     "cross-env": "^7.0.3",
-    "electron": "^27.3.0",
+    "electron": "^29.0.0",
     "electron-builder": "^24.13.3"
   },
   "dependencies": {
-    "better-sqlite3": "^12.5.0",
+    "better-sqlite3": "12.6.0",
     "xlsx": "^0.18.5"
   }
 }

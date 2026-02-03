@@ -4,7 +4,8 @@ import "./react-ui.css";
 import { installGarageBridge } from "./legacyBridge";
 
 const loadedScripts = new Set();
-const TOKEN_KEY = "garage_auth_token";
+const NO_LOGIN = true;
+const DEFAULT_USER = { username: "device", role: "main_admin" };
 
 // Detect if running in Electron
 const isElectron = typeof window !== 'undefined' && window.isElectron === true;
@@ -44,10 +45,6 @@ function App() {
   const containerRef = useRef(null);
   const [legacyReady, setLegacyReady] = useState(false);
   const [user, setUser] = useState(null);
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
   const [syncStatus, setSyncStatus] = useState(null);
   const [syncing, setSyncing] = useState(false);
   const [syncError, setSyncError] = useState("");
@@ -83,12 +80,18 @@ function App() {
       if (cancelled) return;
 
       setLegacyReady(true);
-      const stored = window.garageDB?.getById("settings", "current_user");
-      if (stored && stored.value) {
-        setUser(stored.value);
+      if (NO_LOGIN) {
+        window.garageDB?.upsert("settings", { id: "current_user", value: DEFAULT_USER });
+        setUser(DEFAULT_USER);
         if (typeof window.showApp === "function") window.showApp();
-      } else if (typeof window.showLogin === "function") {
-        window.showLogin();
+      } else {
+        const stored = window.garageDB?.getById("settings", "current_user");
+        if (stored && stored.value) {
+          setUser(stored.value);
+          if (typeof window.showApp === "function") window.showApp();
+        } else if (typeof window.showLogin === "function") {
+          window.showLogin();
+        }
       }
     }
 
@@ -106,11 +109,9 @@ function App() {
     let cancelled = false;
     async function loadSyncStatus() {
       if (!user) return;
-      const token = window.localStorage.getItem(TOKEN_KEY);
-      if (!token) return;
       try {
         const res = await fetch(buildApiUrl("/api/sync/status"), {
-          headers: { Authorization: `Bearer ${token}` }
+          headers: {}
         });
         if (!res.ok) return;
         const data = await res.json();
@@ -153,14 +154,12 @@ function App() {
   }
 
   async function handleSyncNow() {
-    const token = window.localStorage.getItem(TOKEN_KEY);
-    if (!token) return;
     setSyncing(true);
     setSyncError("");
     try {
       const res = await fetch(buildApiUrl("/api/sync/run"), {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}` }
+        headers: {}
       });
       const data = await res.json();
       if (!res.ok) {
@@ -183,13 +182,11 @@ function App() {
 
   async function loadConflicts() {
     if (!user) return;
-    const token = window.localStorage.getItem(TOKEN_KEY);
-    if (!token) return;
     setConflictsLoading(true);
     setConflictsError("");
     try {
       const res = await fetch(buildApiUrl("/api/sync/conflicts"), {
-        headers: { Authorization: `Bearer ${token}` }
+        headers: {}
       });
       const data = await res.json();
       if (!res.ok) {
@@ -207,8 +204,6 @@ function App() {
   }
 
   async function clearConflict(conflictId) {
-    const token = window.localStorage.getItem(TOKEN_KEY);
-    if (!token) return;
     const id = String(conflictId || "");
     if (!id) return;
     setClearingConflictId(id);
@@ -216,7 +211,7 @@ function App() {
     try {
       const res = await fetch(buildApiUrl(`/api/sync/conflicts/${encodeURIComponent(id)}`), {
         method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` }
+        headers: {}
       });
       const data = await res.json();
       if (!res.ok) {
@@ -234,44 +229,6 @@ function App() {
   function openConflicts() {
     setShowConflicts(true);
     loadConflicts();
-  }
-
-  async function handleLogin(event) {
-    event.preventDefault();
-    if (!username || !password) {
-      setError("Please enter username and password.");
-      return;
-    }
-
-    setLoading(true);
-    setError("");
-    try {
-      const result = await window.auth.login(username, password);
-      if (!result) {
-        setError("Invalid username or password.");
-        setLoading(false);
-        return;
-      }
-
-      window.garageDB.upsert("settings", { id: "current_user", value: result });
-      setUser(result);
-      setUsername("");
-      setPassword("");
-      if (typeof window.showApp === "function") window.showApp();
-    } catch (err) {
-      setError("Login failed. Try again.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleLogout() {
-    try {
-      await window.auth.logout();
-    } catch (e) {}
-    window.garageDB.remove("settings", "current_user");
-    setUser(null);
-    if (typeof window.showLogin === "function") window.showLogin();
   }
 
   return (
@@ -308,10 +265,6 @@ function App() {
                   {syncing ? "Syncing..." : "Sync now"}
                 </button>
               ) : null}
-
-              <button className="btn btn-warning" type="button" onClick={handleLogout}>
-                Log Out
-              </button>
             </div>
           </div>
 
@@ -389,42 +342,6 @@ function App() {
             </div>
           )}
         </>
-      )}
-
-      {!user && (
-        <div className="react-login">
-          <form className="container" onSubmit={handleLogin}>
-            <h1>Garage Login</h1>
-            <div className="form-group">
-              <label>Username</label>
-              <input
-                type="text"
-                value={username}
-                onChange={(event) => setUsername(event.target.value)}
-                autoComplete="username"
-              />
-            </div>
-            <div className="form-group">
-              <label>Password</label>
-              <input
-                type="password"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                autoComplete="current-password"
-              />
-            </div>
-            <div className="form-group">
-              <button className="btn btn-primary" type="submit" disabled={loading}>
-                {loading ? "Signing in..." : "Login"}
-              </button>
-            </div>
-            {error ? <div style={{ color: "#dc2626", fontWeight: "bold" }}>{error}</div> : null}
-            <p className="login-note">
-              Users: <strong>admin</strong>/<strong>1234</strong> | <strong>saadeyat</strong>/
-              <strong>stock123</strong> | <strong>viewer</strong>/<strong>viewer123</strong>
-            </p>
-          </form>
-        </div>
       )}
 
       <div ref={containerRef} />
