@@ -6,7 +6,7 @@
   "type": "commonjs",
   "scripts": {
     "start": "electron .",
-    "electron:dev": "NODE_ENV=development electron .",
+    "electron:dev": "cross-env NODE_ENV=development electron .",
     "electron:build": "npm run frontend:build && electron-builder",
     "frontend:build": "cd frontend && npm run build",
     "backend:install": "cd backend && npm install",
@@ -65,6 +65,7 @@
   },
   "devDependencies": {
     "@electron/rebuild": "^3.6.0",
+    "cross-env": "^7.0.3",
     "electron": "^27.3.0",
     "electron-builder": "^24.13.3"
   },
