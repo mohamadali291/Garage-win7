@@ -68,13 +68,14 @@
     }
   },
   "devDependencies": {
-    "@electron/rebuild": "^3.6.0",
+    "@electron/rebuild": "^4.0.3",
     "cross-env": "^7.0.3",
-    "electron": "^29.0.0",
-    "electron-builder": "^24.13.3"
+    "electron": "^40.1.0",
+    "electron-builder": "^26.7.0"
   },
   "dependencies": {
     "better-sqlite3": "12.6.0",
+    "dotenv": "^17.2.3",
     "xlsx": "^0.18.5"
   }
 }
