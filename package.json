@@ -6,7 +6,8 @@
   "type": "commonjs",
   "scripts": {
     "start": "electron .",
-    "electron:dev": "cross-env NODE_ENV=development electron .",
+    "frontend:dev": "cd frontend && npm run dev",
+    "electron:dev": "concurrently -k \"npm run frontend:dev\" \"wait-on http://localhost:5173 && cross-env NODE_ENV=development electron .\"",
     "electron:build": "npm run frontend:build && electron-builder",
     "frontend:build": "cd frontend && npm run build",
     "backend:install": "cd backend && npm install",
@@ -70,9 +71,11 @@
   },
   "devDependencies": {
     "@electron/rebuild": "^4.0.3",
+    "concurrently": "^9.1.2",
     "cross-env": "^7.0.3",
     "electron": "^40.1.0",
-    "electron-builder": "^26.7.0"
+    "electron-builder": "^26.7.0",
+    "wait-on": "^8.0.1"
   },
   "dependencies": {
     "better-sqlite3": "12.6.0",
