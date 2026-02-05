@@ -73,6 +73,11 @@ function startBackend() {
         process.env.DB_PATH = DB_PATH;
         process.env.NODE_ENV = "production";
         process.chdir(backendDir);
+        const backendNodeModules = path.join(backendDir, "node_modules");
+        if (fs.existsSync(backendNodeModules)) {
+          const Module = require("module");
+          Module.globalPaths.unshift(backendNodeModules);
+        }
         require(BACKEND_SCRIPT);
       } catch (err) {
         console.error("[Backend] In-process start failed:", err);
