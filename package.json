@@ -9,7 +9,7 @@
     "frontend:dev": "cd frontend && npm run dev",
     "electron:dev": "concurrently -k \"npm run frontend:dev\" \"wait-on http://localhost:5173 && cross-env NODE_ENV=development electron .\"",
     "electron:build": "npm run frontend:build && npm run backend:install && npm run backend:rebuild-electron && electron-builder",
-    "backend:rebuild-electron": "cd backend && npx electron-rebuild",
+    "backend:rebuild-electron": "electron-rebuild -m backend",
     "frontend:build": "cd frontend && npm run build",
     "backend:install": "cd backend && npm install",
     "frontend:install": "cd frontend && npm install",
