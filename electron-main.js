@@ -1,5 +1,5 @@
 require("dotenv").config();
-const { app, BrowserWindow, Tray, Menu } = require("electron");
+const { app, BrowserWindow, Tray, Menu, dialog } = require("electron");
 const { spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
@@ -245,6 +245,8 @@ app.on("ready", async () => {
     createTray();
   } catch (error) {
     console.error("[Electron] Failed to start app:", error);
+    const msg = error && error.message ? error.message : String(error);
+    dialog.showErrorBox("Hamdan Garage Manager", "Failed to start: " + msg);
     app.quit();
   }
 });
