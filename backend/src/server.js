@@ -601,7 +601,10 @@ app.get("/api/sync/pull", requireServerRole, requireDeviceAuth, (req, res) => {
 });
 
 app.post("/api/sync/full-push", requireServerRole, requireDeviceAuth, (req, res) => {
-  const collections = req.body && req.body.collections && typeof req.body.collections === "object" ? req.body.collections : {};
+  let collections = {};
+  if (req.body && req.body.collections && typeof req.body.collections === "object") {
+    collections = req.body.collections;
+  }
   const summary = {};
   try {
     VALID_COLLECTIONS.forEach((name) => {
@@ -654,8 +657,10 @@ app.post("/api/sync/push-full", requireAuth, async (req, res) => {
     const result = await runPushFull();
     res.json({ ok: true, result });
   } catch (err) {
+    const status = err && err.status;
     const msg = err && err.message ? err.message : "Push all failed";
-    res.status(400).json({ error: msg });
+    const detail = status ? `Server returned ${status}: ${msg}` : msg;
+    res.status(400).json({ error: detail });
   }
 });
 
