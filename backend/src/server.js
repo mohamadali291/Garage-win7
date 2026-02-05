@@ -5,6 +5,8 @@ try {
 }
 
 const express = require("express");
+const path = require("path");
+const fs = require("fs");
 const cors = require("cors");
 const morgan = require("morgan");
 const {
@@ -687,6 +689,19 @@ if (SYNC_ROLE === "client" && SYNC_INTERVAL_MS > 0) {
   }, SYNC_INTERVAL_MS);
 }
 
+// Serve built frontend as a local website (when frontend/dist exists)
+const frontendDist = path.join(__dirname, "..", "..", "frontend", "dist");
+if (fs.existsSync(frontendDist)) {
+  app.use(express.static(frontendDist));
+  app.get("*", (req, res) => {
+    res.sendFile(path.join(frontendDist, "index.html"));
+  });
+  console.log(`Serving frontend from ${frontendDist}`);
+}
+
 app.listen(PORT, () => {
   console.log(`Garage backend listening on http://localhost:${PORT}`);
+  if (fs.existsSync(frontendDist)) {
+    console.log(`Open in browser: http://localhost:${PORT}`);
+  }
 });
