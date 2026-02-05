@@ -1,4 +1,8 @@
-require("dotenv").config();
+try {
+  require("dotenv").config();
+} catch (_) {
+  // dotenv optional when env is set by Electron or system
+}
 
 const express = require("express");
 const cors = require("cors");

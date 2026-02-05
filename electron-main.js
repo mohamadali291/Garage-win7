@@ -73,6 +73,8 @@ function startBackend() {
         process.env.DB_PATH = DB_PATH;
         process.env.NODE_ENV = "production";
         process.chdir(backendDir);
+        const dotenv = require("dotenv");
+        dotenv.config({ path: path.join(backendDir, ".env") });
         const backendNodeModules = path.join(backendDir, "node_modules");
         if (fs.existsSync(backendNodeModules)) {
           const Module = require("module");
