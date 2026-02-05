@@ -26,15 +26,16 @@ let backendProcess = null;
 let tray = null;
 const isDev = process.env.NODE_ENV === "development" || !app.isPackaged;
 
-// Determine if we're running from source or packaged
-const appRoot = isDev ? __dirname : process.resourcesPath;
+// When packaged: backend is in resources/ (extraResources), frontend is in app.asar (files)
+const backendRoot = isDev ? __dirname : process.resourcesPath;
+const frontendRoot = __dirname;
 
 // Backend configuration
 const BACKEND_PORT = process.env.PORT || 4000;
-const BACKEND_SCRIPT = path.join(appRoot, "backend", "src", "server.js");
+const BACKEND_SCRIPT = path.join(backendRoot, "backend", "src", "server.js");
 
 // Frontend configuration
-const FRONTEND_URL = isDev ? "http://localhost:5173" : `file://${path.join(appRoot, "frontend", "dist", "index.html")}`;
+const FRONTEND_URL = isDev ? "http://localhost:5173" : `file://${path.join(frontendRoot, "frontend", "dist", "index.html")}`;
 
 // Database path configuration
 const DB_DIR = path.join(app.getPath("userData"), "data");
@@ -42,7 +43,8 @@ const DB_PATH = path.join(DB_DIR, "garage.sqlite");
 
 console.log("[Electron] App starting...");
 console.log("[Electron] isDev:", isDev);
-console.log("[Electron] appRoot:", appRoot);
+console.log("[Electron] backendRoot:", backendRoot);
+console.log("[Electron] frontendRoot:", frontendRoot);
 console.log("[Electron] Backend script:", BACKEND_SCRIPT);
 console.log("[Electron] Frontend URL:", FRONTEND_URL);
 console.log("[Electron] Database path:", DB_PATH);
@@ -63,7 +65,7 @@ function startBackend() {
 
     console.log("[Backend] Starting backend server...");
 
-    const backendDir = path.join(appRoot, "backend");
+    const backendDir = path.join(backendRoot, "backend");
 
     // When packaged, run backend in-process (no system Node.js required).
     // When in dev, spawn a separate process so logs and restarts are independent.
@@ -184,7 +186,7 @@ function createWindow() {
     // Open DevTools in development mode
     mainWindow.webContents.openDevTools();
   } else {
-    mainWindow.loadFile(path.join(appRoot, "frontend", "dist", "index.html"));
+    mainWindow.loadFile(path.join(frontendRoot, "frontend", "dist", "index.html"));
   }
 
   // Show window when ready
