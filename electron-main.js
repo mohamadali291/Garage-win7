@@ -76,10 +76,20 @@ function startBackend() {
         const dotenv = require("dotenv");
         dotenv.config({ path: path.join(backendDir, ".env") });
         const backendNodeModules = path.join(backendDir, "node_modules");
-        if (fs.existsSync(backendNodeModules)) {
-          const Module = require("module");
-          Module.globalPaths.unshift(backendNodeModules);
-        }
+        const Module = require("module");
+        Module.globalPaths.unshift(backendNodeModules);
+        const backendDirSlash = backendDir + path.sep;
+        const originalResolve = Module._resolveFilename;
+        Module._resolveFilename = function (request, parent, isMain, options) {
+          if (parent && parent.filename && (parent.filename === BACKEND_SCRIPT || parent.filename.startsWith(backendDirSlash))) {
+            try {
+              const backendPaths = [backendNodeModules].concat(Module._nodeModulePaths(backendDir));
+              const fakeParent = { paths: backendPaths };
+              return originalResolve.call(this, request, fakeParent, isMain, options);
+            } catch (_) {}
+          }
+          return originalResolve.call(this, request, parent, isMain, options);
+        };
         require(BACKEND_SCRIPT);
       } catch (err) {
         console.error("[Backend] In-process start failed:", err);
