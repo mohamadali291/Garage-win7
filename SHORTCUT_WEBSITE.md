@@ -59,3 +59,25 @@ From the project folder:
 2. Or create a shortcut to `start-garage-website.bat`: right‑click the file → “Create shortcut”, then move the shortcut to the Desktop or Start menu.
 
 The first run may take a bit while the frontend builds; the browser will open at http://localhost:4000. Close the command window to stop the server.
+
+---
+
+## If you see "NODE_MODULE_VERSION" / better-sqlite3 error
+
+This happens when your Node.js version doesn’t match the version `better-sqlite3` was built with (e.g. after upgrading or switching Node).
+
+**Fix:** Rebuild the backend native module. In the project folder run:
+
+```bash
+npm run backend:rebuild
+```
+
+Or:
+
+```bash
+cd backend
+npm rebuild
+cd ..
+```
+
+Then run the website again (`npm run website` or your shortcut).

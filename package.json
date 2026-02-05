@@ -12,6 +12,7 @@
     "backend:rebuild-electron": "electron-rebuild -m backend",
     "frontend:build": "cd frontend && npm run build",
     "backend:install": "cd backend && npm install",
+    "backend:rebuild": "cd backend && npm rebuild",
     "frontend:install": "cd frontend && npm install",
     "postinstall": "npm run backend:install && npm run frontend:install && electron-builder install-app-deps",
     "dist": "npm run electron:build",
