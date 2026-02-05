@@ -330,6 +330,21 @@ async function runClientSync() {
   }
 }
 
+async function runPushFull() {
+  if (SYNC_ROLE !== "client") throw new Error("Sync client is disabled");
+  if (!SYNC_REMOTE_URL || !SYNC_DEVICE_TOKEN) throw new Error("SYNC_REMOTE_URL and SYNC_DEVICE_TOKEN are required");
+  const collections = {};
+  VALID_COLLECTIONS.forEach((name) => {
+    let items = getAll(name);
+    if (name === "settings") {
+      items = items.filter((item) => item && item.id !== "current_user" && item.id !== "last_sync_time");
+    }
+    collections[name] = items;
+  });
+  const result = await requestRemote("POST", "/api/sync/full-push", { collections });
+  return result;
+}
+
 app.get("/api/health", (req, res) => {
   res.json({ ok: true, time: Date.now() });
 });
@@ -585,6 +600,25 @@ app.get("/api/sync/pull", requireServerRole, requireDeviceAuth, (req, res) => {
   res.json({ records, serverTime: Date.now() });
 });
 
+app.post("/api/sync/full-push", requireServerRole, requireDeviceAuth, (req, res) => {
+  const collections = req.body && req.body.collections && typeof req.body.collections === "object" ? req.body.collections : {};
+  const summary = {};
+  try {
+    VALID_COLLECTIONS.forEach((name) => {
+      let items = Array.isArray(collections[name]) ? collections[name] : [];
+      if (name === "settings") {
+        items = items.filter((item) => item && item.id !== "current_user" && item.id !== "last_sync_time");
+      }
+      setAll(name, items);
+      replaceRecordsForCollection(name, items, req.device.deviceId);
+      summary[name] = items.length;
+    });
+    res.json({ ok: true, summary });
+  } catch (err) {
+    res.status(500).json({ error: err && err.message ? err.message : "Full push failed" });
+  }
+});
+
 app.get("/api/sync/status", requireAuth, (req, res) => {
   const lastSyncRecord = getById("settings", "last_sync_time");
   const lastSyncTime = Number(lastSyncRecord && lastSyncRecord.value) || 0;
@@ -609,6 +643,19 @@ app.post("/api/sync/run", requireAuth, async (req, res) => {
   } catch (err) {
     lastSyncError = err && err.message ? err.message : "Sync failed";
     res.status(400).json({ error: lastSyncError });
+  }
+});
+
+app.post("/api/sync/push-full", requireAuth, async (req, res) => {
+  if (SYNC_ROLE !== "client") {
+    return res.status(400).json({ error: "Sync client is not enabled" });
+  }
+  try {
+    const result = await runPushFull();
+    res.json({ ok: true, result });
+  } catch (err) {
+    const msg = err && err.message ? err.message : "Push all failed";
+    res.status(400).json({ error: msg });
   }
 });
 

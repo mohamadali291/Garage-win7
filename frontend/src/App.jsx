@@ -11,9 +11,20 @@ const DEFAULT_USER = { username: "device", role: "main_admin" };
 const isElectron = typeof window !== 'undefined' && window.isElectron === true;
 const API_BASE = isElectron ? "http://localhost:4000" : (import.meta.env.VITE_API_BASE || "");
 
+const AUTH_TOKEN_KEY = "garage_auth_token";
+
 function buildApiUrl(path) {
   if (!API_BASE) return path;
   return API_BASE.endsWith("/") ? API_BASE.slice(0, -1) + path : API_BASE + path;
+}
+
+function getAuthHeaders() {
+  const headers = {};
+  try {
+    const token = typeof window !== "undefined" && window.localStorage && window.localStorage.getItem(AUTH_TOKEN_KEY);
+    if (token) headers.Authorization = `Bearer ${token}`;
+  } catch (e) {}
+  return headers;
 }
 
 function loadScript(src) {
@@ -53,6 +64,8 @@ function App() {
   const [conflictsLoading, setConflictsLoading] = useState(false);
   const [conflictsError, setConflictsError] = useState("");
   const [clearingConflictId, setClearingConflictId] = useState(null);
+  const [pushFullLoading, setPushFullLoading] = useState(false);
+  const [pushFullError, setPushFullError] = useState("");
 
   const isAdmin = user && user.role === "main_admin";
 
@@ -111,7 +124,7 @@ function App() {
       if (!user) return;
       try {
         const res = await fetch(buildApiUrl("/api/sync/status"), {
-          headers: {}
+          headers: getAuthHeaders()
         });
         if (!res.ok) return;
         const data = await res.json();
@@ -159,9 +172,14 @@ function App() {
     try {
       const res = await fetch(buildApiUrl("/api/sync/run"), {
         method: "POST",
-        headers: {}
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() }
       });
-      const data = await res.json();
+      let data = null;
+      try {
+        data = await res.json();
+      } catch (_) {
+        data = {};
+      }
       if (!res.ok) {
         setSyncError(data && data.error ? data.error : "Sync failed");
       } else if (data && data.result) {
@@ -174,9 +192,41 @@ function App() {
         setSyncStatus((prev) => ({ ...prev, lastSyncTime: data.result.serverTime }));
       }
     } catch (e) {
-      setSyncError("Sync failed");
+      setSyncError(e && e.message ? e.message : "Sync failed");
     } finally {
       setSyncing(false);
+    }
+  }
+
+  async function handlePushFull() {
+    setPushFullLoading(true);
+    setPushFullError("");
+    try {
+      const res = await fetch(buildApiUrl("/api/sync/push-full"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() }
+      });
+      let data = null;
+      try {
+        data = await res.json();
+      } catch (_) {
+        data = {};
+      }
+      if (!res.ok) {
+        setPushFullError(data && data.error ? data.error : "Push all failed");
+        return;
+      }
+      if (window.__garageRefreshCache) {
+        try {
+          await window.__garageRefreshCache();
+        } catch (e) {}
+      }
+      if (typeof window.showApp === "function") window.showApp();
+      setPushFullError("");
+    } catch (e) {
+      setPushFullError(e && e.message ? e.message : "Push all failed");
+    } finally {
+      setPushFullLoading(false);
     }
   }
 
@@ -186,7 +236,7 @@ function App() {
     setConflictsError("");
     try {
       const res = await fetch(buildApiUrl("/api/sync/conflicts"), {
-        headers: {}
+        headers: getAuthHeaders()
       });
       const data = await res.json();
       if (!res.ok) {
@@ -211,7 +261,7 @@ function App() {
     try {
       const res = await fetch(buildApiUrl(`/api/sync/conflicts/${encodeURIComponent(id)}`), {
         method: "DELETE",
-        headers: {}
+        headers: getAuthHeaders()
       });
       const data = await res.json();
       if (!res.ok) {
@@ -240,12 +290,19 @@ function App() {
               Signed in as <strong>{user.username}</strong> ({user.role || "viewer"})
             </div>
             <div className="actions">
+              {syncStatus && syncStatus.role !== "client" ? (
+                <div className="sync-status sync-not-configured">
+                  <span className="sync-state">
+                    Sync is not configured on this device. To sync with the server, set in backend/.env: SYNC_ROLE=client, SYNC_REMOTE_URL, SYNC_DEVICE_TOKEN — then restart the app.
+                  </span>
+                </div>
+              ) : null}
               {syncStatus && syncStatus.role === "client" && (
                 <div className="sync-status">
                   <span className="sync-state">
                     {syncStatus.remoteUrl && syncStatus.deviceTokenPresent
                       ? `Last sync: ${formatSyncTime(syncStatus.lastSyncTime)}`
-                      : "Sync not configured"}
+                      : "Sync not configured (set SYNC_REMOTE_URL and SYNC_DEVICE_TOKEN in backend/.env)"}
                   </span>
                   <span className="sync-meta">
                     Pending: {syncStatus.pendingOps || 0} | Conflicts: {syncStatus.conflicts || 0}
@@ -261,10 +318,16 @@ function App() {
               ) : null}
 
               {syncStatus && syncStatus.role === "client" ? (
-                <button className="btn btn-primary" type="button" onClick={handleSyncNow} disabled={syncing}>
-                  {syncing ? "Syncing..." : "Sync now"}
-                </button>
+                <>
+                  <button className="btn btn-primary" type="button" onClick={handleSyncNow} disabled={syncing}>
+                    {syncing ? "Syncing..." : "Sync now"}
+                  </button>
+                  <button className="btn btn-secondary" type="button" onClick={handlePushFull} disabled={pushFullLoading || syncing} title="Upload all local data to the server (use if data was added before sync was configured)">
+                    {pushFullLoading ? "Pushing…" : "Push all to server"}
+                  </button>
+                </>
               ) : null}
+              {pushFullError ? <span className="sync-error">{pushFullError}</span> : null}
             </div>
           </div>
 

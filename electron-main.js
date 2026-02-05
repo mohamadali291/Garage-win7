@@ -63,37 +63,49 @@ function startBackend() {
 
     console.log("[Backend] Starting backend server...");
 
-    // Set environment variables for the backend
-    const env = {
-      ...process.env,
-      PORT: BACKEND_PORT.toString(),
-      DB_PATH: DB_PATH,
-      NODE_ENV: isDev ? "development" : "production"
-    };
+    const backendDir = path.join(appRoot, "backend");
 
-    backendProcess = spawn("node", [BACKEND_SCRIPT], {
-      cwd: path.join(appRoot, "backend"),
-      env: env,
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-
-    backendProcess.stdout.on("data", (data) => {
-      console.log(`[Backend] ${data.toString().trim()}`);
-    });
-
-    backendProcess.stderr.on("data", (data) => {
-      console.error(`[Backend Error] ${data.toString().trim()}`);
-    });
-
-    backendProcess.on("error", (error) => {
-      console.error("[Backend] Failed to start:", error);
-      reject(error);
-    });
-
-    backendProcess.on("exit", (code, signal) => {
-      console.log(`[Backend] Process exited with code ${code} and signal ${signal}`);
-      backendProcess = null;
-    });
+    // When packaged, run backend in-process (no system Node.js required).
+    // When in dev, spawn a separate process so logs and restarts are independent.
+    if (app.isPackaged) {
+      try {
+        process.env.PORT = BACKEND_PORT.toString();
+        process.env.DB_PATH = DB_PATH;
+        process.env.NODE_ENV = "production";
+        process.chdir(backendDir);
+        require(BACKEND_SCRIPT);
+      } catch (err) {
+        console.error("[Backend] In-process start failed:", err);
+        reject(err);
+        return;
+      }
+    } else {
+      const env = {
+        ...process.env,
+        PORT: BACKEND_PORT.toString(),
+        DB_PATH: DB_PATH,
+        NODE_ENV: isDev ? "development" : "production"
+      };
+      backendProcess = spawn("node", [BACKEND_SCRIPT], {
+        cwd: backendDir,
+        env: env,
+        stdio: ["ignore", "pipe", "pipe"]
+      });
+      backendProcess.stdout.on("data", (data) => {
+        console.log(`[Backend] ${data.toString().trim()}`);
+      });
+      backendProcess.stderr.on("data", (data) => {
+        console.error(`[Backend Error] ${data.toString().trim()}`);
+      });
+      backendProcess.on("error", (error) => {
+        console.error("[Backend] Failed to start:", error);
+        reject(error);
+      });
+      backendProcess.on("exit", (code, signal) => {
+        console.log(`[Backend] Process exited with code ${code} and signal ${signal}`);
+        backendProcess = null;
+      });
+    }
 
     // Wait for backend to be ready
     const checkBackend = setInterval(() => {

@@ -64,6 +64,15 @@
   color: #b91c1c;
 }
 
+.react-topbar .sync-status.sync-not-configured {
+  max-width: 520px;
+  background: #fef3c7;
+  color: #92400e;
+}
+.react-topbar .sync-status.sync-not-configured .sync-state {
+  line-height: 1.35;
+}
+
 .react-modal-backdrop {
   position: fixed;
   inset: 0;
