@@ -7,6 +7,7 @@ const CSP_META =
   '<meta http-equiv="Content-Security-Policy" content="default-src \'self\'; script-src \'self\'; style-src \'self\' \'unsafe-inline\'; img-src \'self\' data:; connect-src \'self\' http://localhost:* http://127.0.0.1:*; font-src \'self\'; base-uri \'self\'">';
 
 export default defineConfig({
+  base: "./",
   plugins: [
     react(),
     {
