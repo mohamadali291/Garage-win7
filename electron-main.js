@@ -28,14 +28,15 @@ const isDev = process.env.NODE_ENV === "development" || !app.isPackaged;
 
 // When packaged: backend is in resources/ (extraResources), frontend is in app.asar (files)
 const backendRoot = isDev ? __dirname : process.resourcesPath;
-const frontendRoot = isDev ? __dirname : path.join(process.resourcesPath, "app.asar");
+// frontendRoot when packaged is set in createWindow() (after app.ready) via app.getAppPath()
+const frontendRoot = isDev ? __dirname : null;
 
 // Backend configuration
 const BACKEND_PORT = process.env.PORT || 4000;
 const BACKEND_SCRIPT = path.join(backendRoot, "backend", "src", "server.js");
 
-// Frontend configuration
-const FRONTEND_URL = isDev ? "http://localhost:5173" : `file://${path.join(frontendRoot, "frontend", "dist", "index.html")}`;
+// Frontend URL (packaged path is computed in createWindow after app.ready)
+const FRONTEND_URL = isDev ? "http://localhost:5173" : null;
 
 // Database path configuration
 const DB_DIR = path.join(app.getPath("userData"), "data");
@@ -44,9 +45,9 @@ const DB_PATH = path.join(DB_DIR, "garage.sqlite");
 console.log("[Electron] App starting...");
 console.log("[Electron] isDev:", isDev);
 console.log("[Electron] backendRoot:", backendRoot);
-console.log("[Electron] frontendRoot:", frontendRoot);
+console.log("[Electron] frontendRoot:", frontendRoot ?? "(packaged, use getAppPath in createWindow)");
 console.log("[Electron] Backend script:", BACKEND_SCRIPT);
-console.log("[Electron] Frontend URL:", FRONTEND_URL);
+console.log("[Electron] Frontend URL:", FRONTEND_URL || "(packaged, set in createWindow)");
 console.log("[Electron] Database path:", DB_PATH);
 
 // Ensure database directory exists
@@ -180,13 +181,22 @@ function createWindow() {
 
   mainWindow = new BrowserWindow(windowOptions);
 
+  const indexPath = isDev
+    ? null
+    : path.join(app.getAppPath(), "frontend", "dist", "index.html");
+  if (!isDev) {
+    console.log("[Electron] Packaged indexPath:", indexPath);
+    if (!fs.existsSync(indexPath)) {
+      console.error("[Electron] Frontend not found at:", indexPath);
+    }
+  }
+
   // Load the frontend
   if (isDev) {
     mainWindow.loadURL(FRONTEND_URL);
-    // Open DevTools in development mode
     mainWindow.webContents.openDevTools();
   } else {
-    mainWindow.loadFile(path.join(frontendRoot, "frontend", "dist", "index.html"));
+    mainWindow.loadFile(indexPath);
   }
 
   // Show window when ready
@@ -197,6 +207,16 @@ function createWindow() {
   // Handle window closed
   mainWindow.on("closed", () => {
     mainWindow = null;
+  });
+
+  // Log load failures and renderer console (so white-screen errors show in terminal)
+  mainWindow.webContents.on("did-fail-load", (event, errorCode, errorDescription, validatedURL) => {
+    console.error("[Electron] Load failed:", errorCode, errorDescription, validatedURL);
+    if (!isDev) mainWindow.webContents.openDevTools();
+  });
+  mainWindow.webContents.on("console-message", (event, level, message, line, sourceId) => {
+    const prefix = level === 3 ? "[Renderer ERROR]" : level === 2 ? "[Renderer WARN]" : "[Renderer]";
+    console.log(prefix, message, sourceId ? `(${sourceId}:${line})` : "");
   });
 
   // Inject Electron detection flag
