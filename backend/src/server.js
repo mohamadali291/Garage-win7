@@ -1,11 +1,11 @@
+const path = require("path");
 try {
-  require("dotenv").config();
+  require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
 } catch (_) {
   // dotenv optional when env is set by Electron or system
 }
 
 const express = require("express");
-const path = require("path");
 const fs = require("fs");
 const cors = require("cors");
 const morgan = require("morgan");
@@ -352,7 +352,7 @@ async function runPushFull() {
 }
 
 app.get("/api/health", (req, res) => {
-  res.json({ ok: true, time: Date.now() });
+  res.json({ ok: true, time: Date.now(), noLogin: NO_LOGIN });
 });
 
 app.get("/api/bootstrap", requireAuth, (req, res) => {

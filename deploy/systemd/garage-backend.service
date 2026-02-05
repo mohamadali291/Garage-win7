@@ -14,6 +14,7 @@ Environment=NODE_ENV=production
 Environment=PORT=4000
 Environment=CORS_ORIGIN=*
 Environment=SYNC_ROLE=server
+Environment=NO_LOGIN=true
 Environment=DB_PATH=/var/lib/garage/garage.sqlite
 
 ExecStart=/usr/bin/node /opt/garage-backend/src/server.js
