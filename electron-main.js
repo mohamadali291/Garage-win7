@@ -28,7 +28,7 @@ const isDev = process.env.NODE_ENV === "development" || !app.isPackaged;
 
 // When packaged: backend is in resources/ (extraResources), frontend is in app.asar (files)
 const backendRoot = isDev ? __dirname : process.resourcesPath;
-const frontendRoot = __dirname;
+const frontendRoot = isDev ? __dirname : path.join(process.resourcesPath, "app.asar");
 
 // Backend configuration
 const BACKEND_PORT = process.env.PORT || 4000;
