@@ -17,8 +17,8 @@
     "postinstall": "npm run backend:install && npm run frontend:install && electron-builder install-app-deps",
     "dist": "npm run electron:build",
     "website:build": "npm run frontend:build",
-    "website": "npm run website:build && node backend/src/server.js",
-    "website:dev": "concurrently -k \"npm run frontend:dev\" \"node backend/src/server.js\""
+    "website": "npm run website:build && cross-env NO_LOGIN=true node backend/src/server.js",
+    "website:dev": "concurrently -k \"npm run frontend:dev\" \"cross-env NO_LOGIN=true node backend/src/server.js\""
   },
   "author": "Hamdan EV Tronics",
   "license": "ISC",

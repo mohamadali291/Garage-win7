@@ -16,6 +16,7 @@ echo.
 REM Start server and open browser after a delay
 start "" cmd /c "timeout /t 8 /nobreak > nul && start http://localhost:4000"
 
+set NO_LOGIN=true
 npm run website
 
 echo.
