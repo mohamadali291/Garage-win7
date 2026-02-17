@@ -2,7 +2,7 @@
 Type=Application
 Name=Hamdan Garage Manager (Website)
 Comment=Run Garage Manager as a local website in your browser
-Exec=gnome-terminal -- bash -c "cd /home/mohamad-ghoush/Documents/QuantumLab/garage && ./scripts/start-website.sh; exec bash"
+Exec=gnome-terminal -- bash -c "cd C:\garage && ./scripts/start-website.sh; exec bash"
 Icon=web-browser
 Terminal=false
 Categories=Office;Network;

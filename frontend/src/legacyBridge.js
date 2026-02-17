@@ -5,7 +5,7 @@ const isElectron = typeof window !== 'undefined' && window.isElectron === true;
 const API_BASE = isElectron ? "http://localhost:4000" : (import.meta.env.VITE_API_BASE || "");
 const TOKEN_KEY = "garage_auth_token";
 const USER_KEY = "garage_current_user";
-const NO_LOGIN = true;
+const NO_LOGIN = false;
 const DEFAULT_USER = { username: "device", role: "main_admin" };
 
 const cache = {
@@ -88,9 +88,9 @@ function removeFromCollection(collection, id) {
 async function requestJson(method, path, body, opts = {}) {
   const { auth = true } = opts;
   const headers = { "Content-Type": "application/json" };
+  const tokenAtRequest = auth ? getToken() : null;
   if (auth) {
-    const token = getToken();
-    if (token) headers.Authorization = `Bearer ${token}`;
+    if (tokenAtRequest) headers.Authorization = `Bearer ${tokenAtRequest}`;
   }
 
   const res = await fetch(buildUrl(path), {
@@ -110,6 +110,21 @@ async function requestJson(method, path, body, opts = {}) {
   }
 
   if (!res.ok) {
+    if (res.status === 401 && auth) {
+      const currentToken = getToken();
+      // Only clear if the token used for this request is still current.
+      if (tokenAtRequest && tokenAtRequest === currentToken) {
+        setToken(null);
+        setStoredUser(null);
+        cache.ready = false;
+        cache.collections = {};
+        cache.users = [];
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new CustomEvent("garage-user-changed", { detail: null }));
+          if (typeof window.showLogin === "function") window.showLogin();
+        }
+      }
+    }
     const error = data && data.error ? data.error : `Request failed (${res.status})`;
     throw new Error(error);
   }

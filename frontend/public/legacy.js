@@ -20,6 +20,208 @@ function dbSetSetting(id, value) {
 function dbRemoveSetting(id) {
   try { window.garageDB && window.garageDB.remove && window.garageDB.remove('settings', id); } catch(e){}
 }
+
+// ===============================
+// BACKUP FOLDER (local setting)
+// ===============================
+const BACKUP_FOLDER_SETTING_ID = 'backup_folder';
+
+function getBackupFolder() {
+  const v = dbGetSetting(BACKUP_FOLDER_SETTING_ID, '');
+  return (typeof v === 'string') ? v : '';
+}
+
+function setBackupFolder(path) {
+  if (path && typeof path === 'string') dbSetSetting(BACKUP_FOLDER_SETTING_ID, path);
+  else dbRemoveSetting(BACKUP_FOLDER_SETTING_ID);
+}
+
+function getLegacyApiBase() {
+  try {
+    if (window.isElectron === true) return "http://localhost:4000";
+    if (window.location && window.location.protocol === "file:") return "http://localhost:4000";
+    const origin = window.location && window.location.origin ? window.location.origin : "";
+    if (/localhost:5173|127\.0\.0\.1:5173/.test(origin)) return "http://localhost:4000";
+  } catch (e) {}
+  return "";
+}
+
+function buildLegacyApiUrl(path) {
+  const base = getLegacyApiBase();
+  if (!base) return path;
+  return base.endsWith("/") ? base.slice(0, -1) + path : base + path;
+}
+
+function getAuthToken() {
+  try { return window.localStorage.getItem('garage_auth_token'); } catch (e) { return null; }
+}
+
+function backupApiRequest(method, path, body) {
+  const headers = { "Content-Type": "application/json" };
+  const token = getAuthToken();
+  if (token) headers.Authorization = "Bearer " + token;
+  return fetch(buildLegacyApiUrl(path), {
+    method: method,
+    headers: headers,
+    body: body ? JSON.stringify(body) : undefined
+  }).then(function(res) {
+    return res.text().then(function(text) {
+      let data = null;
+      if (text) {
+        try { data = JSON.parse(text); } catch (e) { data = text; }
+      }
+      if (!res.ok) {
+        const msg = data && data.error ? data.error : ("Request failed (" + res.status + ")");
+        throw new Error(msg);
+      }
+      return data;
+    });
+  });
+}
+
+function refreshBackupFolderUI() {
+  const label = document.getElementById('backupFolderLabel');
+  if (!label) return;
+  const folder = getBackupFolder();
+  if (folder) {
+    label.textContent = folder;
+    label.title = folder;
+  } else {
+    label.textContent = 'No backup folder selected';
+    label.title = '';
+  }
+}
+
+async function selectBackupFolder() {
+  if (typeof requireAdminAction === 'function' && !requireAdminAction()) return;
+  const btn = document.getElementById('backupFolderBtn');
+  const originalText = btn ? btn.textContent : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Selecting...';
+  }
+  try {
+    const isDesktop =
+      window.isElectron === true ||
+      (window.location && window.location.protocol === 'file:');
+
+    let folder = '';
+    if (!isDesktop) {
+      const current = getBackupFolder();
+      const input = window.prompt('Enter full backup folder path (e.g., E:\\\\Backups):', current || '');
+      folder = input ? String(input).trim() : '';
+      if (!folder) return;
+    } else {
+      const result = await backupApiRequest('POST', '/api/backup/select-folder', {});
+      folder = result && result.folder ? String(result.folder) : '';
+      if (!folder) {
+        if (result && result.cancelled) return;
+        uiError('No folder selected.');
+        return;
+      }
+    }
+    setBackupFolder(folder);
+    refreshBackupFolderUI();
+
+    const backup = await backupApiRequest('POST', '/api/backup/run', { folder: folder });
+    if (backup && backup.file) {
+      uiError('Backup saved to: ' + backup.file);
+    } else {
+      uiError('Backup completed.');
+    }
+  } catch (e) {
+    const msg = e && e.message ? e.message : 'Backup failed.';
+    if (msg === 'Backup folder selection is available only in the desktop app.') return;
+    uiError(msg);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = originalText || 'Select Backup Folder';
+    }
+  }
+}
+
+async function backupNow() {
+  if (typeof requireAdminAction === 'function' && !requireAdminAction()) return;
+  const btn = document.getElementById('backupNowBtn');
+  const originalText = btn ? btn.textContent : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Backing up...';
+  }
+  try {
+    const folder = getBackupFolder();
+    if (!folder) {
+      uiError('Select backup folder first.');
+      return;
+    }
+    const backup = await backupApiRequest('POST', '/api/backup/run', { folder: folder });
+    if (backup && backup.file) {
+      uiError('Backup saved to: ' + backup.file);
+    } else {
+      uiError('Backup completed.');
+    }
+  } catch (e) {
+    const msg = e && e.message ? e.message : 'Backup failed.';
+    uiError(msg);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = originalText || 'Backup Now';
+    }
+  }
+}
+function refreshItemsFromDb() {
+  try {
+    if (window.garageDB) {
+      items = window.garageDB.getAll('items') || items || [];
+    }
+  } catch (e) {}
+  try {
+    syncServiceItemsFromItems();
+  } catch (e) {}
+  try {
+    if (typeof syncServiceItemsFromItems === 'function') syncServiceItemsFromItems();
+  } catch (e) {}
+}
+function refreshServiceItemsFromDb() {
+  try {
+    refreshItemsFromDb();
+  } catch (e) {}
+}
+let lastItemsRefreshAt = 0;
+let itemsRefreshPromise = null;
+let lastServiceRefreshAt = 0;
+let serviceRefreshPromise = null;
+function refreshItemsFromServer(force) {
+  if (typeof window.__garageRefreshCache !== 'function') return Promise.resolve();
+  const now = Date.now();
+  if (!force && now - lastItemsRefreshAt < 1500) return itemsRefreshPromise || Promise.resolve();
+  if (itemsRefreshPromise) return itemsRefreshPromise;
+  itemsRefreshPromise = window.__garageRefreshCache()
+    .catch(function() {})
+    .then(function() {
+      lastItemsRefreshAt = Date.now();
+      itemsRefreshPromise = null;
+    });
+  return itemsRefreshPromise;
+}
+function refreshServiceItemsFromServer(force) {
+  if (typeof window.__garageRefreshCache !== 'function') return Promise.resolve();
+  const now = Date.now();
+  if (!force && now - lastServiceRefreshAt < 1500) return serviceRefreshPromise || Promise.resolve();
+  if (serviceRefreshPromise) return serviceRefreshPromise;
+  serviceRefreshPromise = refreshItemsFromServer(force)
+    .catch(function() {})
+    .then(function() {
+      try {
+        if (typeof syncServiceItemsFromItems === 'function') syncServiceItemsFromItems();
+      } catch (e) {}
+      lastServiceRefreshAt = Date.now();
+      serviceRefreshPromise = null;
+    });
+  return serviceRefreshPromise;
+}
 function getCurrentUser() {
   const u = dbGetSetting('current_user', null);
   if (!u) return null;
@@ -48,6 +250,7 @@ const DEFAULT_INVOICE_HEADER = {
   line2: 'Kornish Al Mazraa Facing Al Daman\"NSSF\"',
   line3: '71334040 / 03334040'
 };
+const DEFAULT_INVOICE_TVA_REG_NO = '';
 
 function getInvoiceHeaderLines() {
   return {
@@ -57,14 +260,55 @@ function getInvoiceHeaderLines() {
   };
 }
 
+function getInvoiceTvaRegNo() {
+  return String(dbGetSetting('invoice_tva_reg_no', DEFAULT_INVOICE_TVA_REG_NO) || '');
+}
+
+function getLbpUsdRate() {
+  const v = dbGetSetting('lbp_usd_rate', '');
+  const n = parseFloat(v);
+  return isNaN(n) || n <= 0 ? 0 : n;
+}
+
+function refreshCurrencySettings() {
+  const input = document.getElementById('lbp-usd-rate');
+  if (!input) return;
+  const rate = getLbpUsdRate();
+  input.value = rate ? String(rate) : '';
+}
+
+function saveCurrencySettings() {
+  if (typeof requireAdminAction === 'function' && !requireAdminAction()) return;
+  const input = document.getElementById('lbp-usd-rate');
+  if (!input) return;
+  const rate = parseFloat(input.value);
+  if (isNaN(rate) || rate <= 0) {
+    uiError('Please enter a valid LBP to USD rate.', input);
+    return;
+  }
+  dbSetSetting('lbp_usd_rate', rate);
+  uiError('Currency rate saved.');
+  try {
+    if (typeof renderExpenses === 'function') renderExpenses();
+  } catch (e) {}
+  try {
+    const reportType = document.getElementById('reportType');
+    if (reportType && reportType.value === 'expenseToday') {
+      renderReportExpenseToday();
+    }
+  } catch (e) {}
+}
+
 function refreshInvoiceHeaderSettings() {
   const lines = getInvoiceHeaderLines();
   const l1 = document.getElementById('invoice-header-line1');
   const l2 = document.getElementById('invoice-header-line2');
   const l3 = document.getElementById('invoice-header-line3');
+  const tva = document.getElementById('invoice-tva-reg-no');
   if (l1) l1.value = lines.line1;
   if (l2) l2.value = lines.line2;
   if (l3) l3.value = lines.line3;
+  if (tva) tva.value = getInvoiceTvaRegNo();
 }
 
 function saveInvoiceHeaderSettings() {
@@ -72,9 +316,11 @@ function saveInvoiceHeaderSettings() {
   const l1 = document.getElementById('invoice-header-line1');
   const l2 = document.getElementById('invoice-header-line2');
   const l3 = document.getElementById('invoice-header-line3');
+  const tva = document.getElementById('invoice-tva-reg-no');
   dbSetSetting('invoice_header_line1', l1 ? l1.value.trim() : '');
   dbSetSetting('invoice_header_line2', l2 ? l2.value.trim() : '');
   dbSetSetting('invoice_header_line3', l3 ? l3.value.trim() : '');
+  dbSetSetting('invoice_tva_reg_no', tva ? tva.value.trim() : '');
   uiError('Invoice header saved.');
 }
 
@@ -85,7 +331,75 @@ let items = [];
 let invoices = [];
 let suppliers = [];
 let employees = [];
+let payrollPayments = [];
+let expenses = [];
+let serviceItems = [];
+let serviceItemSearchTerm = '';
+let servicePage = 1;
+let servicePageSize = 10;
 let users = [];
+
+function ensureEmployeePayrollArray(emp) {
+  if (!emp) return [];
+  if (!Array.isArray(emp.payrollPayments)) emp.payrollPayments = [];
+  return emp.payrollPayments;
+}
+
+function rebuildPayrollPaymentsFromEmployees() {
+  const list = [];
+  (employees || []).forEach(function(emp) {
+    const arr = Array.isArray(emp && emp.payrollPayments) ? emp.payrollPayments : [];
+    arr.forEach(function(p) {
+      if (!p) return;
+      const copy = { ...p, employeeId: emp.id };
+      list.push(copy);
+    });
+  });
+  payrollPayments = list;
+  return list;
+}
+
+function migratePayrollPaymentsToEmployees() {
+  let legacy = [];
+  try {
+    legacy = window.garageDB ? (window.garageDB.getAll('payrollPayments') || []) : [];
+  } catch (e) {
+    legacy = [];
+  }
+  if (!legacy || legacy.length === 0) {
+    rebuildPayrollPaymentsFromEmployees();
+    return;
+  }
+  let changed = false;
+  legacy.forEach(function(p) {
+    if (!p || p.employeeId == null) return;
+    const emp = (employees || []).find(function(e) { return String(e.id) === String(p.employeeId); });
+    if (!emp) return;
+    const arr = ensureEmployeePayrollArray(emp);
+    const pid = p.id != null ? p.id : (Date.now() + Math.floor(Math.random() * 1000));
+    if (arr.some(function(x) { return String(x.id) === String(pid); })) return;
+    const copy = { ...p, id: pid };
+    delete copy.employeeId;
+    arr.push(copy);
+    changed = true;
+  });
+  if (changed) {
+    dbSetAll('employees', employees);
+  }
+  try { dbSetAll('payrollPayments', []); } catch (e) {}
+  rebuildPayrollPaymentsFromEmployees();
+}
+
+function isServiceItem(item) {
+  return !!(item && item.isService === true);
+}
+
+function syncServiceItemsFromItems() {
+  serviceItems = (items || []).filter(isServiceItem);
+}
+
+let weeklyPayrollContext = null;
+let weeklyPayrollEndDate = '';
 let warehouses = [];
 let transfers = [];
 
@@ -142,6 +456,7 @@ let barcodeIndex = new Map();
 function rebuildBarcodeIndex() {
   barcodeIndex = new Map();
   (items || []).forEach(function(it) {
+    if (isServiceItem(it)) return;
     const bc = String(it && it.barcode ? it.barcode : '').trim();
     if (!bc) return;
     // Keep first occurrence; barcodes should be unique
@@ -156,6 +471,103 @@ function findItemByBarcode(code) {
   return (items || []).find(function(i) { return String(i.id) === String(id); }) || null;
 }
 
+function migrateLegacyServiceItems() {
+  if (!window.garageDB || !window.garageDB.getAll) {
+    syncServiceItemsFromItems();
+    return;
+  }
+
+  let legacy = [];
+  try {
+    legacy = window.garageDB.getAll('serviceItems') || [];
+  } catch (e) {
+    legacy = [];
+  }
+
+  if (!Array.isArray(legacy) || legacy.length === 0) {
+    syncServiceItemsFromItems();
+    return;
+  }
+
+  function buildKey(s) {
+    const code = String(s && s.code ? s.code : '').trim().toLowerCase();
+    const name = String(s && s.name ? s.name : '').trim().toLowerCase();
+    return code + '|' + name;
+  }
+
+  const byKey = new Map();
+  (items || []).forEach(function(it) {
+    if (!isServiceItem(it)) return;
+    byKey.set(buildKey(it), it);
+  });
+
+  let maxId = 0;
+  (items || []).forEach(function(it) {
+    const n = safeInt(it && it.id);
+    if (n > maxId) maxId = n;
+  });
+
+  const idMap = new Map();
+  let itemsChanged = false;
+
+  legacy.forEach(function(svc) {
+    if (!svc) return;
+    const key = buildKey(svc);
+    const existing = byKey.get(key);
+    if (existing) {
+      idMap.set(String(svc.id), existing.id);
+      return;
+    }
+
+    let newId = svc.id;
+    if (!newId || (items || []).some(function(it) { return String(it.id) === String(newId); })) {
+      maxId += 1;
+      newId = maxId;
+    }
+
+    const newItem = {
+      id: newId,
+      name: svc.name || '',
+      code: svc.code || '',
+      isService: true,
+      sellingPrice: 0,
+      costPrice: 0,
+      price: 0,
+      quantity: 0,
+      quantities: {},
+      lowStockThreshold: 0
+    };
+
+    ensureItemPricing(newItem);
+    ensureItemQuantities(newItem);
+
+    items.push(newItem);
+    byKey.set(key, newItem);
+    idMap.set(String(svc.id), newId);
+    itemsChanged = true;
+  });
+
+  let invoicesChanged = false;
+  if (idMap.size > 0) {
+    (invoices || []).forEach(function(inv) {
+      if (!inv || !Array.isArray(inv.items)) return;
+      inv.items.forEach(function(line) {
+        if (!line || line.serviceItemId == null) return;
+        const mapped = idMap.get(String(line.serviceItemId));
+        if (mapped && String(mapped) !== String(line.serviceItemId)) {
+          line.serviceItemId = mapped;
+          invoicesChanged = true;
+        }
+      });
+    });
+  }
+
+  if (itemsChanged) dbSetAll('items', items);
+  if (invoicesChanged) dbSetAll('invoices', invoices);
+
+  syncServiceItemsFromItems();
+}
+
 
 function dbLoadAll() {
   clients = window.garageDB.getAll('clients') || [];
@@ -166,9 +578,13 @@ function dbLoadAll() {
   invoices = window.garageDB.getAll('invoices') || [];
   suppliers = window.garageDB.getAll('suppliers') || [];
   employees = window.garageDB.getAll('employees') || [];
+  expenses = window.garageDB.getAll('expenses') || [];
   users = window.garageDB.getAll('users') || [];
   warehouses = window.garageDB.getAll('warehouses') || [];
   transfers = window.garageDB.getAll('transfers') || [];
+  migrateLegacyServiceItems();
+  syncServiceItemsFromItems();
+  migratePayrollPaymentsToEmployees();
 }
 
 function dbSetAll(name, arr) {
@@ -183,6 +599,7 @@ dbSetAll('cars', cars);
   dbSetAll('invoices', invoices);
   dbSetAll('suppliers', suppliers);
   dbSetAll('employees', employees);
+  dbSetAll('expenses', expenses);
   dbSetAll('users', users);
   dbSetAll('warehouses', warehouses);
   dbSetAll('transfers', transfers);
@@ -195,6 +612,7 @@ function clearAllInvoices() {
     invoicePage = 1;
     dbSetAll('invoices', invoices);
     renderInvoices();
+    renderInvoiceA();
     renderClients();
   });
 }
@@ -219,7 +637,17 @@ function ensureWarehouses() {
       changed = true;
     }
   }
-  if (changed) dbSetAll('warehouses', warehouses);
+  if (changed) {
+    let allowWrite = true;
+    try {
+      allowWrite = typeof hasPerm === 'function' ? hasPerm("*") : true;
+    } catch (e) {
+      allowWrite = true;
+    }
+    if (allowWrite) {
+      dbSetAll('warehouses', warehouses);
+    }
+  }
 }
 
 function saveWarehouses() {
@@ -538,9 +966,22 @@ function clearLogo() {
         return perms.includes(perm);
     }
 
+    function hasItemAdminAccess() {
+        const role = getRole();
+        return role === "saadeyat_stock" || hasPerm("*");
+    }
+
    function requireAdminAction(message) {
   if (!hasPerm("*")) {
     uiError(message || "Access denied. Only Main Admin can do this.");
+    return false;
+  }
+  return true;
+}
+
+function requireItemAdminAction(message) {
+  if (!hasItemAdminAccess()) {
+    uiError(message || "Access denied. Only Main Admin or Saadeyat Stock can do this.");
     return false;
   }
   return true;
@@ -562,7 +1003,8 @@ function ensureRenderedOnce() {
             items: false,
             invoices: false,
             suppliers: false,
-            employees: false
+            employees: false,
+            expenses: false
         };
     }
 }
@@ -618,12 +1060,16 @@ function ensureRenderedOnce() {
 
         // Hide/disable all Admin-only controls
         document.querySelectorAll('[data-admin-only="1"]').forEach(el => {
-            el.style.display = hasPerm("*") ? "" : "none";
+            const inItems = !!el.closest('#items');
+            const allow = inItems ? hasItemAdminAccess() : hasPerm("*");
+            el.style.display = allow ? "" : "none";
         });
         document.querySelectorAll('[data-admin-disable="1"]').forEach(el => {
-            el.disabled = !hasPerm("*");
-            el.style.pointerEvents = hasPerm("*") ? "" : "none";
-            el.style.opacity = hasPerm("*") ? "" : "0.5";
+            const inItems = !!el.closest('#items');
+            const allow = inItems ? hasItemAdminAccess() : hasPerm("*");
+            el.disabled = !allow;
+            el.style.pointerEvents = allow ? "" : "none";
+            el.style.opacity = allow ? "" : "0.5";
         });
 
         // If not logged in, hide everything
@@ -639,7 +1085,7 @@ function ensureRenderedOnce() {
         }
     
 
-    function showApp() {
+function showApp() {
         ensureRenderedOnce();
         const loginScreen = document.getElementById('login-screen');
         const appRoot = document.getElementById('app-root');
@@ -664,10 +1110,24 @@ function ensureRenderedOnce() {
         refreshSettingsUser();
         refreshLogoPreview();
         refreshInvoiceHeaderSettings();
+        refreshCurrencySettings();
         refreshWarehouseSettingsUI();
         refreshFixedTagsUI();
+        refreshBackupFolderUI();
             applyAccessControl();
-    }
+
+        // Re-render the currently active tab after sync/login so new data shows immediately
+        try {
+            const activeTab = document.querySelector('.tab-content.active');
+            if (activeTab && activeTab.id) {
+                const tabBtn = Array.from(document.querySelectorAll('.tab')).find(b => {
+                    const oc = b.getAttribute('onclick') || '';
+                    return oc.includes("showTab('" + activeTab.id + "'");
+                });
+                showTab(activeTab.id, tabBtn || null);
+            }
+        } catch (e) {}
+}
 
     function showLogin() {
         const modal = document.getElementById('modal');
@@ -712,8 +1172,17 @@ if (modal) modal.classList.remove('active');
         }
     }
 
-    function logout() {
+    async function logout() {
+        try {
+            if (window.auth && typeof window.auth.logout === 'function') {
+                await window.auth.logout();
+            }
+        } catch (e) {}
+
         setCurrentUser(null);
+        if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('garage-user-changed', { detail: null }));
+        }
         showLogin();
 
         const firstTabBtn = document.querySelector('.tabs .tab');
@@ -887,6 +1356,9 @@ function legacyInit() {
     // ✅ SUCCESS
     setError('');
     setCurrentUser(result);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('garage-user-changed', { detail: result }));
+    }
     uEl.value = '';
     pEl.value = '';
     showApp();
@@ -911,6 +1383,12 @@ function legacyInit() {
   if (logoInput) logoInput.addEventListener('change', handleLogoFileChange);
   const logoRemoveBtn = document.getElementById('settings-logo-remove');
   if (logoRemoveBtn) logoRemoveBtn.addEventListener('click', clearLogo);
+
+  const backupBtn = document.getElementById('backupFolderBtn');
+  if (backupBtn) backupBtn.addEventListener('click', selectBackupFolder);
+  const backupNowBtn = document.getElementById('backupNowBtn');
+  if (backupNowBtn) backupNowBtn.addEventListener('click', backupNow);
+  refreshBackupFolderUI();
 }
 
 if (document.readyState === 'loading') {
@@ -977,6 +1455,7 @@ if (document.readyState === 'loading') {
 
         title.textContent = "📦 Transform to Main Warehouse";
         const opts = (items || [])
+            .filter(function(it){ return !isServiceItem(it); })
             .slice()
             .sort((a,b)=>String(a.name||'').localeCompare(String(b.name||'')))
             .map(it => `<option value="${it.id}">${escapeHtml(it.name || 'Item')} (${escapeHtml(it.partNumber || '-')})</option>`)
@@ -1210,9 +1689,9 @@ function safeInt(n) {
 function normalizeTagsInput(raw) {
   const s = String(raw || '');
 
-  // split by comma OR semicolon OR any newline (\n or \r\n)
+  // split by comma OR semicolon OR any newline (\n or \r\n) OR spaced hyphen " - "
   const parts = s
-    .split(/[,\r\n;]+/)
+    .split(/[,\r\n;]+|\s+-\s+/)
     .map(x => x.trim())
     .filter(Boolean);
 
@@ -1268,8 +1747,18 @@ function refreshFixedTagsUI() {
   }).join('');
 }
 
+function toggleTagsPanel() {
+  const panel = document.getElementById('items-tags-manager');
+  if (!panel) return;
+  const isHidden = panel.style.display === 'none' || panel.style.display === '';
+  panel.style.display = isHidden ? 'block' : 'none';
+  if (isHidden) {
+    try { refreshFixedTagsUI(); } catch (e) {}
+  }
+}
+
 function addFixedTag() {
-  if (typeof requireAdminAction === 'function' && !requireAdminAction()) return;
+  if (typeof requireItemAdminAction === 'function' && !requireItemAdminAction()) return;
   const input = document.getElementById('fixedTagInput');
   if (!input) return;
   const tag = String(input.value || '').trim();
@@ -1284,7 +1773,7 @@ function addFixedTag() {
 }
 
 function removeFixedTag(tag) {
-  if (typeof requireAdminAction === 'function' && !requireAdminAction()) return;
+  if (typeof requireItemAdminAction === 'function' && !requireItemAdminAction()) return;
   const tags = getFixedTags().filter(t => t.toLowerCase() !== String(tag || '').toLowerCase());
   setFixedTags(tags);
   refreshFixedTagsUI();
@@ -1393,6 +1882,12 @@ function ensureItemQuantities(item) {
 
     
 
+    function isSaadeyatWarehouse(w) {
+        const id = String(w && w.id != null ? w.id : '').toLowerCase();
+        const name = String(w && w.name != null ? w.name : '').toLowerCase();
+        return id === 'saadeyat' || name.includes('saadeyat');
+    }
+
     function refreshWarehouseSettingsUI() {
         const isAdmin = hasPerm('*');
         const list = document.getElementById('warehousesList');
@@ -1403,7 +1898,7 @@ function ensureItemQuantities(item) {
 
         list.innerHTML = warehouses.map((w, idx) => {
             const widJs = JSON.stringify(String(w.id));
-            const delDisabled = warehouses.length <= 1 ? 'disabled' : '';
+            const delDisabled = (warehouses.length <= 1 || isSaadeyatWarehouse(w)) ? 'disabled' : '';
             const hint = idx === 0 ? ' <span style="color:#666;font-size:12px;">(default)</span>' : '';
             return `
                 <div style="display:flex; gap:8px; align-items:center; margin:6px 0;">
@@ -1480,6 +1975,11 @@ function ensureItemQuantities(item) {
 
     function deleteWarehouse(id) {
         if (!requireAdminAction()) return;        ensureWarehouses();
+        const target = (warehouses || []).find(w => String(w.id) === String(id));
+        if (isSaadeyatWarehouse(target)) {
+            uiError('Saadeyat warehouse cannot be deleted.');
+            return;
+        }
         if (warehouses.length <= 1) {
             uiError('You must keep at least one warehouse.');
             return;
@@ -1529,18 +2029,25 @@ let editingId = null;
     let itemPage = 1;
     let itemPageSize = 10;
 
+    // Expenses pagination
+    let expensePage = 1;
+    let expensePageSize = 10;
+    let expenseSearchTerm = '';
+    let payrollSearchTerm = '';
+
     // ======= PERFORMANCE HELPERS =======
     const MAX_ROWS = 10; // ✅ show only first 10 rows (prevents lag)
 
     // Render-lazy flags (tabs)
-    var renderedOnce = {
-        clients: false,
-        cars: false,
-        items: false,
-        invoices: false,
-        suppliers: false,
-        employees: false
-    };
+var renderedOnce = {
+    clients: false,
+    cars: false,
+    items: false,
+    invoices: false,
+    suppliers: false,
+    employees: false,
+    expenses: false
+};
 
     // Fast lookup maps (avoid Array.find in loops)
     var clientById = new Map();
@@ -1548,8 +2055,8 @@ let editingId = null;
         clientById = new Map((clients || []).map(c => [c.id, c]));
     }
 
-    var clientCarsSearchIndex = new Map();
-    function rebuildClientCarsSearchIndex() {
+var clientCarsSearchIndex = new Map();
+function rebuildClientCarsSearchIndex() {
         // Build one searchable string per client from ALL their cars (plate/VIN/chassis/make/model/year)
         clientCarsSearchIndex = new Map();
         try {
@@ -1578,11 +2085,50 @@ let editingId = null;
         } catch(e) {
             console.error(e);
         }
-    }
+}
 
-    function getClientCarsSearchString(clientId) {
-        return (clientCarsSearchIndex && clientCarsSearchIndex.get(clientId)) ? String(clientCarsSearchIndex.get(clientId)) : '';
+function getClientCarsSearchString(clientId) {
+    return (clientCarsSearchIndex && clientCarsSearchIndex.get(clientId)) ? String(clientCarsSearchIndex.get(clientId)) : '';
+}
+
+var clientCarsLabelMap = new Map();
+function rebuildClientCarsLabelMap() {
+    clientCarsLabelMap = new Map();
+    try {
+        (cars || []).forEach(function(car) {
+            if (!car) return;
+            const cid = car.clientId;
+            if (cid === undefined || cid === null || cid === '') return;
+
+            const model = String(car.model || car.make || '').trim();
+            const year = String(car.year || '').trim();
+            let label = model ? model : 'Car';
+            if (year) label = (label + ' ' + year).trim();
+            if (!label) return;
+
+            const prev = clientCarsLabelMap.get(cid) || [];
+            prev.push(label);
+            clientCarsLabelMap.set(cid, prev);
+        });
+    } catch(e) {
+        console.error(e);
     }
+}
+
+function getClientCarsLabel(clientId) {
+    const list = (clientCarsLabelMap && clientCarsLabelMap.get(clientId)) ? clientCarsLabelMap.get(clientId) : null;
+    if (!list || !list.length) return '';
+    const seen = {};
+    const unique = [];
+    list.forEach(function(label) {
+        const t = String(label || '').trim();
+        if (!t) return;
+        if (seen[t]) return;
+        seen[t] = true;
+        unique.push(t);
+    });
+    return unique.join(', ');
+}
 
     // Simple debounce (avoid freeze while typing)
     function debounce(fn, wait) {
@@ -1601,9 +2147,44 @@ let editingId = null;
         return (list || []).slice(0, MAX_ROWS);
     }
 
-    // invoices pagination state
-    let invoicePage = 1;
-    let invoicePageSize = 10; // default last 10 invoices per page
+// invoices pagination state
+let invoicePage = 1;
+let invoicePageSize = 10; // default last 10 invoices per page
+let invoiceAPage = 1;
+let invoiceAPageSize = 10;
+let invoiceSubTab = 'standard';
+let itemsSubTab = 'stock';
+
+function isInvoiceA(inv) {
+  return inv && String(inv.invoiceType || '').toUpperCase() === 'A';
+}
+
+function canUseInvoiceA() {
+  try {
+    return typeof hasPerm === 'function' ? hasPerm("*") : false;
+  } catch (e) {
+    return false;
+  }
+}
+
+function getNextInvoiceANumber() {
+  let next = parseInt(dbGetSetting('invoice_a_next_number', ''), 10);
+  if (!next || next < 1) {
+    let max = 0;
+    (invoices || []).forEach(function(inv) {
+      if (!isInvoiceA(inv)) return;
+      const n = parseInt(inv.invoiceNumber, 10);
+      if (!isNaN(n) && n > max) max = n;
+    });
+    next = max + 1;
+  }
+  return next;
+}
+
+function bumpInvoiceANumber(usedNumber) {
+  const next = (parseInt(usedNumber, 10) || 0) + 1;
+  dbSetSetting('invoice_a_next_number', next);
+}
 
     // ======= HELPER: INVOICE FINANCIALS =======
 
@@ -1699,13 +2280,96 @@ function showTab(tabName, btn) {
   } else if (tabName === 'cars') {
     runOnce('cars', renderCars);
   } else if (tabName === 'items') {
-    runOnce('items', renderItems);
+    runOnce('items', function () {
+      renderItems();
+      renderServiceItems();
+    });
+    setTimeout(function () {
+      showItemsSubTab(itemsSubTab || 'stock');
+    }, 0);
   } else if (tabName === 'invoices') {
-    runOnce('invoices', renderInvoices);
+    runOnce('invoices', function () {
+      renderInvoices();
+      renderInvoiceA();
+    });
+    setTimeout(function () {
+      showInvoiceSubTab(invoiceSubTab || 'standard');
+    }, 0);
   } else if (tabName === 'suppliers') {
     runOnce('suppliers', renderSuppliers);
   } else if (tabName === 'employees') {
-    runOnce('employees', renderEmployees);
+    runOnce('employees', function () {
+      renderEmployees();
+      renderPayrollPayments();
+    });
+  } else if (tabName === 'expenses') {
+    runOnce('expenses', renderExpenses);
+    // Always refresh totals when switching to Expenses (income/net depends on invoice state)
+    setTimeout(function () {
+      try { renderExpenses(); } catch (e) {}
+    }, 0);
+  }
+}
+
+function showInvoiceSubTab(type, btn) {
+  if (type === 'A' && !canUseInvoiceA()) {
+    type = 'standard';
+  }
+  invoiceSubTab = type;
+
+  document.querySelectorAll('.invoice-subtab').forEach(function(b){ b.classList.remove('active'); });
+  if (!btn) {
+    const candidates = Array.from(document.querySelectorAll('.invoice-subtab'));
+    btn = candidates.find(function(b) {
+      const label = String(b.textContent || '').toLowerCase();
+      if (type === 'A') return label.includes('invoice a');
+      return label === 'invoice';
+    }) || null;
+  }
+  if (btn) btn.classList.add('active');
+
+  document.querySelectorAll('.invoice-subtab-content').forEach(function(c){ c.classList.remove('active'); });
+  const standard = document.getElementById('invoiceSubtabStandard');
+  const invoiceA = document.getElementById('invoiceSubtabA');
+  if (type === 'A') {
+    if (invoiceA) invoiceA.classList.add('active');
+  } else {
+    if (standard) standard.classList.add('active');
+  }
+
+  if (type === 'A') renderInvoiceA();
+  else renderInvoices();
+}
+
+function showItemsSubTab(type, btn) {
+  itemsSubTab = type;
+
+  document.querySelectorAll('.items-subtab').forEach(function(b){ b.classList.remove('active'); });
+  if (!btn) {
+    const candidates = Array.from(document.querySelectorAll('.items-subtab'));
+    btn = candidates.find(function(b) {
+      const label = String(b.textContent || '').toLowerCase();
+      if (type === 'service') return label.includes('non-stock') || label.includes('service');
+      return label.includes('stock');
+    }) || null;
+  }
+  if (btn) btn.classList.add('active');
+
+  document.querySelectorAll('.items-subtab-content').forEach(function(c){ c.classList.remove('active'); });
+  const stock = document.getElementById('itemsStockSubtab');
+  const service = document.getElementById('itemsServiceSubtab');
+  const stockPager = document.getElementById('itemsPager');
+  const servicePager = document.getElementById('serviceItemsPager');
+  if (type === 'service') {
+    if (service) service.classList.add('active');
+    if (servicePager) servicePager.style.display = 'flex';
+    if (stockPager) stockPager.style.display = 'none';
+    renderServiceItems();
+  } else {
+    if (stock) stock.classList.add('active');
+    if (stockPager) stockPager.style.display = 'flex';
+    if (servicePager) servicePager.style.display = 'none';
+    renderItems();
   }
 }
 
@@ -1831,6 +2495,7 @@ function showTab(tabName, btn) {
 
     function getItemsTotalPages() {
         const total = (items || []).filter(function(i) {
+            if (isServiceItem(i)) return false;
             if (!itemSearchTerm) return true;
             const name = (i.name || '').toLowerCase();
             const part = (i.partNumber || '').toLowerCase();
@@ -1858,6 +2523,16 @@ var _carSearchDebounced = debounce(function (value) {
     function onItemSearch(value) {
         _itemSearchDebounced(value);
     }
+
+    var _serviceItemSearchDebounced = debounce(function (value) {
+        serviceItemSearchTerm = (value || '').trim().toLowerCase();
+        servicePage = 1;
+        renderServiceItems();
+    }, 250);
+
+    function onServiceItemSearch(value) {
+        _serviceItemSearchDebounced(value);
+    }
 function focusInvoiceBarcodeInput() {
     const input = document.getElementById('invoice-barcode-input');
     if (input) {
@@ -1878,6 +2553,11 @@ function onInvoiceBarcodeKeydown(e) {
   const item = (items || []).find(i => String(i.barcode || '').trim() === code);
   if (!item) {
     uiError(`Barcode not found: ${code}`);
+    input.value = '';
+    return;
+  }
+  if (isServiceItem(item)) {
+    uiError(`Barcode belongs to a non-stock item: ${item.name || code}`);
     input.value = '';
     return;
   }
@@ -1905,11 +2585,13 @@ function onInvoiceBarcodeKeydown(e) {
     return;
   }
 
-  let lastRow = container.querySelector('.invoice-item:last-child');
+  let lastRow = Array.from(container.querySelectorAll('.invoice-item')).reverse()
+    .find(r => r.querySelector('.invoice-item-select'));
   if (!lastRow) {
-    // if there are no rows at all, create one
+    // if there are no stock rows at all, create one
     addInvoiceItem();
-    lastRow = container.querySelector('.invoice-item:last-child');
+    lastRow = Array.from(container.querySelectorAll('.invoice-item')).reverse()
+      .find(r => r.querySelector('.invoice-item-select'));
   }
 
   const lastSelect = lastRow ? lastRow.querySelector('.invoice-item-select') : null;
@@ -1937,7 +2619,12 @@ function onInvoiceBarcodeKeydown(e) {
 
     // ======= MODAL OPEN =======
     function openModal(type, id) {
-        if (!requireAdminAction()) return;        if (id === undefined) id = null;
+        if (type === 'item' || type === 'serviceItem') {
+            if (!requireItemAdminAction()) return;
+        } else {
+            if (!requireAdminAction()) return;
+        }
+        if (id === undefined) id = null;
         currentType = type;
         editingId = id;
 
@@ -1948,7 +2635,7 @@ function onInvoiceBarcodeKeydown(e) {
 
 // 🔥 IMPORTANT: toggle invoice size
 content.classList.remove('invoice-modal');
-if (type === 'invoice') {
+if (type === 'invoice' || type === 'invoiceA') {
     content.classList.add('invoice-modal');
 }
 
@@ -2080,6 +2767,22 @@ body.innerHTML = `
                 </div>
             `;
             renderWarehouseQtyFields(item);
+        } else if (type === 'serviceItem') {
+            const service = id ? serviceItems.find(function(s) { return s.id === id; }) : {};
+            body.innerHTML = `
+                <div class="form-group">
+                    <label>Service Code</label>
+                    <input type="text" id="serviceItemCode" value="${service && service.code ? service.code : ''}">
+                </div>
+                <div class="form-group">
+                    <label>Service Name</label>
+                    <input type="text" id="serviceItemName" value="${service && service.name ? service.name : ''}" required>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-primary" onclick="saveServiceItem()">Save</button>
+                    <button class="btn" onclick="closeModal()">Cancel</button>
+                </div>
+            `;
         } else if (type === 'supplier') {
             const supplier = id ? suppliers.find(function(s) { return s.id === id; }) : {};
             body.innerHTML = `
@@ -2128,6 +2831,15 @@ body.innerHTML = `
                     <input type="text" id="employeeRole" value="${employee && employee.role ? employee.role : ''}" placeholder="Mechanic, Electrician, etc.">
                 </div>
                 <div class="form-group">
+                    <label>Weekly Salary</label>
+                    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                        <input type="number" step="0.01" id="employeeWeeklyUsd" value="${employee && employee.weeklySalaryUsd != null ? employee.weeklySalaryUsd : ''}" placeholder="$">
+                        <span style="opacity:0.7;">$</span>
+                        <input type="number" step="1" id="employeeWeeklyLbp" value="${employee && employee.weeklySalaryLbp != null ? employee.weeklySalaryLbp : ''}" placeholder="L.L">
+                        <span style="opacity:0.7;">L.L</span>
+                    </div>
+                </div>
+                <div class="form-group">
                     <label>Notes</label>
                     <textarea id="employeeNotes" rows="3">${employee && employee.notes ? employee.notes : ''}</textarea>
                 </div>
@@ -2136,6 +2848,265 @@ body.innerHTML = `
                     <button class="btn" onclick="closeModal()">Cancel</button>
                 </div>
             `;
+        } else if (type === 'payroll') {
+            const payroll = id ? payrollPayments.find(function(p) { return p.id === id; }) : {};
+            const today = new Date().toISOString().split('T')[0];
+            const employeeOptions = (employees || []).map(function(e) {
+                return `<option value="${e.id}" ${payroll && String(payroll.employeeId) === String(e.id) ? 'selected' : ''}>${e.name}</option>`;
+            }).join('');
+            const weeklyEnd = weeklyPayrollContext && weeklyPayrollContext.weekEnding ? weeklyPayrollContext.weekEnding : (payroll && payroll.weekEnding ? payroll.weekEnding : '');
+            body.innerHTML = `
+                <div class="form-group">
+                    <label>Date</label>
+                    <input type="date" id="payrollDate" value="${payroll && payroll.date ? payroll.date : (weeklyEnd || today)}" required>
+                </div>
+                <div class="form-group">
+                    <label>Employee</label>
+                    <select id="payrollEmployeeId" required onchange="onPayrollEmployeeChange()">
+                        <option value="">Select Employee</option>
+                        ${employeeOptions}
+                    </select>
+                </div>
+                ${weeklyEnd ? `
+                <div class="form-group">
+                    <label>Week Ending (Saturday)</label>
+                    <input type="date" id="payrollWeekEnding" value="${weeklyEnd}">
+                </div>
+                ` : `<input type="hidden" id="payrollWeekEnding" value="${weeklyEnd}">`}
+                <div class="form-group">
+                    <label>Base Salary Paid</label>
+                    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                        <input type="number" step="0.01" id="payrollBaseUsd" value="${payroll && payroll.baseUsd != null ? payroll.baseUsd : ''}" placeholder="$">
+                        <span style="opacity:0.7;">$</span>
+                        <input type="number" step="1" id="payrollBaseLbp" value="${payroll && payroll.baseLbp != null ? payroll.baseLbp : ''}" placeholder="L.L">
+                        <span style="opacity:0.7;">L.L</span>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Bonus</label>
+                    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                        <input type="number" step="0.01" id="payrollBonusUsd" value="${payroll && payroll.bonusUsd != null ? payroll.bonusUsd : ''}" placeholder="$">
+                        <span style="opacity:0.7;">$</span>
+                        <input type="number" step="1" id="payrollBonusLbp" value="${payroll && payroll.bonusLbp != null ? payroll.bonusLbp : ''}" placeholder="L.L">
+                        <span style="opacity:0.7;">L.L</span>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Notes</label>
+                    <textarea id="payrollNotes" rows="3">${payroll && payroll.notes ? payroll.notes : ''}</textarea>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-primary" onclick="savePayrollPayment()">Save</button>
+                    <button class="btn" onclick="closeModal()">Cancel</button>
+                </div>
+            `;
+            if (!id) {
+                setTimeout(function() {
+                    try { onPayrollEmployeeChange(); } catch(e) {}
+                }, 0);
+            }
+        } else if (type === 'expense') {
+            const expense = id ? expenses.find(function(e) { return e.id === id; }) : {};
+            const today = new Date().toISOString().split('T')[0];
+            body.innerHTML = `
+                <div class="form-group">
+                    <label>Date</label>
+                    <input type="date" id="expenseDate" value="${expense && expense.date ? expense.date : today}" required>
+                </div>
+                <div class="form-group">
+                    <label>Category</label>
+                    <input type="text" id="expenseCategory" value="${expense && expense.category ? expense.category : ''}" placeholder="Rent, Parts, Fuel..." required>
+                </div>
+                <div class="form-group">
+                    <label>Vendor</label>
+                    <input type="text" id="expenseVendor" value="${expense && expense.vendor ? expense.vendor : ''}" placeholder="Supplier or store">
+                </div>
+                <div class="form-group">
+                    <label>Amount</label>
+                    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                        <input type="number" step="0.01" id="expenseAmount" value="${expense && expense.amount != null ? expense.amount : ''}" required>
+                        <select id="expenseCurrency">
+                            <option value="USD" ${expense && expense.currency === 'USD' ? 'selected' : ''}>$</option>
+                            <option value="LBP" ${expense && expense.currency === 'LBP' ? 'selected' : ''}>L.L</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Payment Method</label>
+                    <input type="text" id="expenseMethod" value="${expense && expense.paymentMethod ? expense.paymentMethod : ''}" placeholder="Cash, Bank, Card">
+                </div>
+                <div class="form-group">
+                    <label>Notes</label>
+                    <textarea id="expenseNotes" rows="3">${expense && expense.notes ? expense.notes : ''}</textarea>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-primary" onclick="saveExpense()">Save</button>
+                    <button class="btn" onclick="closeModal()">Cancel</button>
+                </div>
+            `;
+        } else if (type === 'invoiceA') {
+            const today = new Date().toISOString().split('T')[0];
+            title.textContent = id ? 'Edit Invoice A' : 'Add Invoice A';
+            const invoice = id
+                ? invoices.find(function(i) { return i.id === id; })
+                : { items: [], date: today, invoiceType: 'A' };
+
+            const clientOptions = buildClientOptionsLimited(invoice && invoice.clientId != null ? invoice.clientId : null, 60);
+            const client = invoice && invoice.clientId ? clients.find(function(c) { return c.id === invoice.clientId; }) : null;
+            const car = invoice && invoice.carId ? cars.find(function(c) { return c.id === invoice.carId; }) : null;
+            const invoiceNumberPreview = invoice && invoice.invoiceNumber ? invoice.invoiceNumber : getNextInvoiceANumber();
+            const tvaDefault = (invoice && typeof invoice.tvaDefault === 'boolean')
+                ? invoice.tvaDefault
+                : ((invoice && Array.isArray(invoice.items) && invoice.items.length > 0)
+                    ? invoice.items.every(function(it){ return it && it.tva === true; })
+                    : false);
+
+            body.innerHTML = `
+                <div class="invoice-a-form">
+                    <div class="invoice-a-top">
+                        <div class="invoice-a-left">
+                            <div class="form-group">
+                                <label>Client</label>
+                                <div class="invoice-a-client-picker">
+                                    <input type="text" id="invoiceAClientSearch" placeholder="Search client by name or phone..."
+                                        oninput="filterInvoiceAClientOptions(this.value)" onfocus="filterInvoiceAClientOptions(this.value)" onblur="onClientSearchBlur(this)">
+                                    <input type="hidden" id="invoiceAClientId" value="${invoice && invoice.clientId != null ? invoice.clientId : ''}">
+                                    <div class="client-dropdown"></div>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label>Phone</label>
+                                <input type="text" id="invoiceAClientPhone" value="${client && client.phone ? client.phone : ''}" disabled>
+                            </div>
+                        </div>
+                        <div class="invoice-a-right">
+                            <div class="form-group">
+                                <label>Invoice No</label>
+                                <input type="text" id="invoiceANumber" value="${invoiceNumberPreview || ''}" disabled>
+                            </div>
+                            <div class="form-group">
+                                <label>TVA Registration No</label>
+                                <input type="text" id="invoiceATvaReg" value="${invoice && invoice.tvaRegNo != null ? invoice.tvaRegNo : getInvoiceTvaRegNo()}">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="invoice-a-grid">
+                        <div class="form-group">
+                            <label>Car (Optional)</label>
+                            <input type="text" id="invoiceACarSearch" placeholder="Search car by plate, model, year..." oninput="filterInvoiceACarOptions()">
+                            <select id="invoiceACarId" onchange="onInvoiceACarSelectChange(this.value)">
+                                <option value="">Select Car</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Registration</label>
+                            <input type="text" id="invoiceARegistration" value="${car && car.plate ? car.plate : ''}" disabled>
+                        </div>
+                        <div class="form-group">
+                            <label>Chassis No</label>
+                            <input type="text" id="invoiceAChassis" value="${car && car.vin ? car.vin : ''}" disabled>
+                        </div>
+                        <div class="form-group">
+                            <label>Fiscal Reg</label>
+                            <input type="text" id="invoiceAFiscalReg" value="${invoice && invoice.fiscalReg ? invoice.fiscalReg : ''}">
+                        </div>
+                        <div class="form-group">
+                            <label>Invoice Date</label>
+                            <input type="date" id="invoiceADate" value="${invoice && invoice.date ? invoice.date : today}" required>
+                        </div>
+                    </div>
+
+                    <div class="invoice-a-tools">
+                        <label style="display:flex; align-items:center; gap:6px;">
+                            <input type="checkbox" id="invoiceATvaDefault" ${tvaDefault ? 'checked' : ''} onchange="toggleInvoiceATvaDefault(this.checked)">
+                            TVA (11%)
+                        </label>
+                        <button class="btn btn-primary" type="button" onclick="addInvoiceAItem()">+ Add New Item</button>
+                        <button class="btn btn-warning" type="button" onclick="addCustomInvoiceAItem()">+ Add Custom Item</button>
+                        <button class="btn btn-secondary" type="button" onclick="addServiceInvoiceAItem()">+ Add Service Item</button>
+                    </div>
+
+                    <div class="invoice-a-items">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th style="width:30%;">Description</th>
+                                    <th style="width:10%;">Price($)</th>
+                                    <th style="width:8%;">Qty</th>
+                                    <th style="width:8%;">TVA (11%)</th>
+                                    <th style="width:12%;">Total($)</th>
+                                    <th style="width:14%;">Employee</th>
+                                    <th style="width:14%;">Supplier</th>
+                                    <th style="width:6%;">Delete</th>
+                                </tr>
+                            </thead>
+                            <tbody id="invoiceAItems"></tbody>
+                        </table>
+                    </div>
+
+                    <div class="total">Total: $<span id="invoiceATotal">0.00</span></div>
+                    <div class="form-group">
+                        <label>Amount Paid</label>
+                        <input type="number" id="invoiceAAmountPaid" step="0.01" min="0" value="0" oninput="onInvoiceAAmountPaidChange()">
+                    </div>
+                    <div class="form-group">
+                        <label>Remaining</label>
+                        <input type="text" id="invoiceARemaining" readonly value="0.00">
+                    </div>
+                    <div class="modal-footer">
+                        <button class="btn btn-primary" onclick="saveInvoiceA()">Save</button>
+                        <button class="btn" onclick="closeModal()">Cancel</button>
+                    </div>
+                </div>
+            `;
+
+            const amountPaidInput = document.getElementById('invoiceAAmountPaid');
+            if (amountPaidInput) {
+                let initialPaid = 0;
+                if (invoice && invoice.id) {
+                    const financials = getInvoiceFinancials(invoice);
+                    initialPaid = financials.amountPaid;
+                }
+                amountPaidInput.value = initialPaid;
+            }
+
+            if (invoice && invoice.clientId) {
+                const clientIdInput = document.getElementById('invoiceAClientId');
+                const clientSearch = document.getElementById('invoiceAClientSearch');
+                const cid = String(invoice.clientId);
+                if (clientIdInput) clientIdInput.value = cid;
+                if (clientSearch) {
+                    const cl = (Array.isArray(clients) ? clients : []).find(function(x){ return String(x.id) === cid; });
+                    const label = cl ? (cl.phone ? (cl.name + ' - ' + cl.phone) : (cl.name || ('Client #' + cid))) : ('Client #' + cid);
+                    clientSearch.value = label;
+                    clientSearch.setAttribute('data-client-name', label);
+                }
+                onInvoiceAClientChange();
+                if (invoice.carId) {
+                    updateInvoiceACarOptions(invoice.carId);
+                }
+            } else {
+                updateInvoiceACarOptions();
+            }
+
+            if (invoice && invoice.items && invoice.items.length > 0) {
+                invoice.items.forEach(function(item) {
+                    if (item.itemId) {
+                        addInvoiceAItem(item);
+                    } else if (item.serviceItemId) {
+                        addServiceInvoiceAItem(item);
+                    } else {
+                        addCustomInvoiceAItem(item);
+                    }
+                });
+            }
+
+            if (!invoice.items || invoice.items.length === 0) {
+                addInvoiceAItem();
+            }
+
+            calculateInvoiceATotal();
         } else if (type === 'invoice') {
             const invoice = id
                 ? invoices.find(function(i) { return i.id === id; })
@@ -2153,13 +3124,12 @@ const tagOptions = getFixedTags().map(function(t) {
                 </div>
                 <div class="form-group">
                     <label>Client</label>
-                    <input type="text" id="invoiceClientSearch" placeholder="Search client by name or phone..." oninput="filterInvoiceClientOptions(this.value)"
->
-                    <select id="invoiceClientId" onchange="updateCarOptions(); this.size=1;" required>
-
-                        <option value="">Select Client</option>
-                        ${clientOptions}
-                    </select>
+                    <div class="invoice-client-picker">
+                        <input type="text" id="invoiceClientSearch" placeholder="Search client by name or phone..."
+                            oninput="filterInvoiceClientOptions(this.value)" onfocus="filterInvoiceClientOptions(this.value)" onblur="onClientSearchBlur(this)">
+                        <input type="hidden" id="invoiceClientId" value="${invoice && invoice.clientId != null ? invoice.clientId : ''}">
+                        <div class="client-dropdown"></div>
+                    </div>
                 </div>
                 <div class="form-group">
                     <label>Car (Optional)</label>
@@ -2182,11 +3152,12 @@ const tagOptions = getFixedTags().map(function(t) {
                     <input type="text" id="invoiceBarcodeScan" placeholder="Click here and scan barcode..." onkeydown="onInvoiceBarcodeKeydown(event)" autocomplete="off">
                     <div style="font-size:12px;color:#666;margin-top:4px;">Your USB scanner will type the code then press Enter. This will auto-add the item.</div>
                 </div>
-<div class="form-group">
+                <div class="form-group">
                     <label>Items</label>
                     <div id="invoiceItems" class="invoice-items"></div>
                     <button class="btn btn-primary" type="button" onclick="addInvoiceItem()">+ Add Stock Item</button>
                     <button class="btn btn-warning" type="button" onclick="addCustomInvoiceItem()">+ Add Custom Item</button>
+                    <button class="btn btn-secondary" type="button" onclick="addServiceInvoiceItem()">+ Add Service Item</button>
                 </div>
                 <div class="form-group">
                     <label>Notes</label>
@@ -2218,18 +3189,15 @@ const tagOptions = getFixedTags().map(function(t) {
             }
 
             if (invoice && invoice.clientId) {
-                const clientSelect = document.getElementById('invoiceClientId');
-                if (clientSelect) {
-                    const cid = String(invoice.clientId);
-                    const hasOption = Array.from(clientSelect.options || []).some(function(o){ return String(o.value) === cid; });
-                    if (!hasOption) {
-                        const cl = (Array.isArray(clients) ? clients : []).find(function(x){ return String(x.id) === cid; });
-                        const opt = document.createElement('option');
-                        opt.value = cid;
-                        opt.textContent = cl ? (cl.name || ('Client #' + cid)) : ('Client #' + cid);
-                        clientSelect.appendChild(opt);
-                    }
-                    clientSelect.value = String(invoice.clientId);
+                const clientIdInput = document.getElementById('invoiceClientId');
+                const clientSearch = document.getElementById('invoiceClientSearch');
+                const cid = String(invoice.clientId);
+                if (clientIdInput) clientIdInput.value = cid;
+                if (clientSearch) {
+                    const cl = (Array.isArray(clients) ? clients : []).find(function(x){ return String(x.id) === cid; });
+                    const label = cl ? (cl.phone ? (cl.name + ' - ' + cl.phone) : (cl.name || ('Client #' + cid))) : ('Client #' + cid);
+                    clientSearch.value = label;
+                    clientSearch.setAttribute('data-client-name', label);
                 }
                 if (invoice.carId) {
                     updateCarOptions(invoice.carId);
@@ -2244,6 +3212,8 @@ const tagOptions = getFixedTags().map(function(t) {
                 invoice.items.forEach(function(item) {
                     if (item.itemId) {
                         addInvoiceItem(item);
+                    } else if (item.serviceItemId) {
+                        addServiceInvoiceItem(item);
                     } else {
                         addCustomInvoiceItem(item);
                     }
@@ -2276,6 +3246,7 @@ function closeModal() {
 
     editingId = null;
     currentType = null;
+    weeklyPayrollContext = null;
 }
 
 
@@ -2339,7 +3310,7 @@ renderCars();
     }
 
     function saveItem() {
-        if (!requireAdminAction()) return;        ensureWarehouses();
+        if (!requireItemAdminAction()) return;        ensureWarehouses();
 
         const sellingVal = document.getElementById('sellingPrice').value;
         const costEl = document.getElementById('costPrice');
@@ -2405,7 +3376,7 @@ renderCars();
         }
 
         // Non-admins should never set cost
-        if (!hasPerm("*")) {
+        if (!hasItemAdminAccess()) {
             delete data.costPrice;
             delete data.tags;
         }
@@ -2423,6 +3394,45 @@ renderCars();
                 dbSetAll('items', items);
         rebuildBarcodeIndex();
 renderItems();
+        closeModal();
+    }
+
+    function saveServiceItem() {
+        if (!requireItemAdminAction()) return;
+
+        const code = (document.getElementById('serviceItemCode')?.value || '').trim();
+        const name = (document.getElementById('serviceItemName')?.value || '').trim();
+        if (!name) {
+            uiError('Service name is required.', document.getElementById('serviceItemName'));
+            return;
+        }
+
+        const data = { name: name, code: code, isService: true };
+
+        if (editingId) {
+            const index = items.findIndex(function(i) { return i.id === editingId; });
+            if (index !== -1) {
+                items[index] = { ...items[index], ...data, id: editingId };
+            }
+        } else {
+            const newItem = {
+                ...data,
+                id: Date.now(),
+                sellingPrice: 0,
+                costPrice: 0,
+                price: 0,
+                quantity: 0,
+                quantities: {},
+                lowStockThreshold: 0
+            };
+            ensureItemPricing(newItem);
+            ensureItemQuantities(newItem);
+            items.push(newItem);
+        }
+
+        dbSetAll('items', items);
+        syncServiceItemsFromItems();
+        renderServiceItems();
         closeModal();
     }
 
@@ -2454,12 +3464,14 @@ renderSuppliers();
         closeModal();
     }
 
-    function saveEmployee() {
+function saveEmployee() {
         if (!requireAdminAction()) return;        const data = {
             name: document.getElementById('employeeName').value.trim(),
             phone: document.getElementById('employeePhone').value.trim(),
             email: document.getElementById('employeeEmail').value.trim(),
             role: document.getElementById('employeeRole').value.trim(),
+            weeklySalaryUsd: parseFloat(document.getElementById('employeeWeeklyUsd').value) || 0,
+            weeklySalaryLbp: parseFloat(document.getElementById('employeeWeeklyLbp').value) || 0,
             notes: document.getElementById('employeeNotes').value.trim()
         };
 
@@ -2478,14 +3490,175 @@ renderSuppliers();
             employees.push({ ...data, id: Date.now() });
         }
 
-                dbSetAll('employees', employees);
+        dbSetAll('employees', employees);
 renderEmployees();
+        closeModal();
+    }
+
+    function onPayrollEmployeeChange() {
+        const select = document.getElementById('payrollEmployeeId');
+        if (!select) return;
+        const empId = select.value ? parseInt(select.value, 10) : null;
+        if (!empId) return;
+
+        const emp = (employees || []).find(function(e) { return e.id === empId; });
+        if (!emp) return;
+
+        const baseUsdInput = document.getElementById('payrollBaseUsd');
+        const baseLbpInput = document.getElementById('payrollBaseLbp');
+
+        if (baseUsdInput) baseUsdInput.value = Number(emp.weeklySalaryUsd) || 0;
+        if (baseLbpInput) baseLbpInput.value = Number(emp.weeklySalaryLbp) || 0;
+    }
+
+    function openPayrollModal() {
+        weeklyPayrollContext = null;
+        openModal('payroll');
+    }
+
+    function openWeeklyPayroll(employeeId) {
+        weeklyPayrollContext = {
+            employeeId: employeeId,
+            weekEnding: weeklyPayrollEndDate || getWeekEndingSaturday(new Date().toISOString().split('T')[0])
+        };
+        openModal('payroll');
+        setTimeout(function() {
+            const select = document.getElementById('payrollEmployeeId');
+            if (select) {
+                select.value = String(employeeId);
+                try { onPayrollEmployeeChange(); } catch(e) {}
+            }
+        }, 0);
+    }
+
+    function markWeeklyUnpaid(employeeId) {
+        if (!requireAdminAction()) return;
+        const weekEnding = weeklyPayrollEndDate || getWeekEndingSaturday(new Date().toISOString().split('T')[0]);
+        const target = (payrollPayments || []).find(function(p) {
+            return String(p.employeeId) === String(employeeId) && String(p.weekEnding || '') === String(weekEnding);
+        });
+        if (!target) return;
+        uiConfirm('Mark this weekly payment as unpaid? This will remove the saved payment record for this week.', () => {
+            const emp = (employees || []).find(function(e) { return String(e.id) === String(employeeId); });
+            if (emp) {
+                const arr = ensureEmployeePayrollArray(emp).filter(function(p) { return String(p.id) !== String(target.id); });
+                emp.payrollPayments = arr;
+                dbSetAll('employees', employees);
+            }
+            rebuildPayrollPaymentsFromEmployees();
+            renderPayrollPayments();
+            renderWeeklyPayroll();
+        });
+    }
+
+    function savePayrollPayment() {
+        if (!requireAdminAction()) return;
+
+        const date = document.getElementById('payrollDate').value;
+        const employeeIdRaw = document.getElementById('payrollEmployeeId').value;
+        const employeeId = employeeIdRaw ? parseInt(employeeIdRaw, 10) : null;
+        const weekEndingInput = document.getElementById('payrollWeekEnding');
+        const weekEndingRaw = weekEndingInput ? weekEndingInput.value : '';
+        const weekEnding = weekEndingRaw ? getWeekEndingSaturday(weekEndingRaw) : '';
+
+        const data = {
+            date: date,
+            employeeId: employeeId,
+            baseUsd: parseFloat(document.getElementById('payrollBaseUsd').value) || 0,
+            baseLbp: parseFloat(document.getElementById('payrollBaseLbp').value) || 0,
+            bonusUsd: parseFloat(document.getElementById('payrollBonusUsd').value) || 0,
+            bonusLbp: parseFloat(document.getElementById('payrollBonusLbp').value) || 0,
+            weekEnding: weekEnding || '',
+            isWeeklyPayment: !!weekEnding,
+            notes: document.getElementById('payrollNotes').value.trim()
+        };
+
+        if (!data.date || !data.employeeId) {
+            uiError('Date and employee are required.');
+            return;
+        }
+
+        rebuildPayrollPaymentsFromEmployees();
+        if (!editingId && data.weekEnding) {
+            const exists = (payrollPayments || []).some(function(p) {
+                return String(p.employeeId) === String(data.employeeId) && String(p.weekEnding || '') === String(data.weekEnding);
+            });
+            if (exists) {
+                uiError('This employee is already marked Paid for that week.');
+                return;
+            }
+        }
+
+        const emp = (employees || []).find(function(e) { return String(e.id) === String(data.employeeId); });
+        if (!emp) {
+            uiError('Employee not found.');
+            return;
+        }
+        const arr = ensureEmployeePayrollArray(emp);
+        const payload = { ...data };
+        delete payload.employeeId;
+        if (editingId) {
+            const index = arr.findIndex(function(p) { return String(p.id) === String(editingId); });
+            if (index !== -1) {
+                arr[index] = { ...arr[index], ...payload, id: editingId };
+            } else {
+                arr.push({ ...payload, id: editingId });
+            }
+        } else {
+            arr.push({ ...payload, id: Date.now() });
+        }
+
+        dbSetAll('employees', employees);
+        rebuildPayrollPaymentsFromEmployees();
+        renderPayrollPayments();
+        renderWeeklyPayroll();
+        weeklyPayrollContext = null;
+        closeModal();
+    }
+
+    function saveExpense() {
+        if (!requireAdminAction()) return;
+        const date = document.getElementById('expenseDate').value;
+        const amountRaw = document.getElementById('expenseAmount').value;
+        const amount = parseFloat(amountRaw);
+        const currency = document.getElementById('expenseCurrency') ? document.getElementById('expenseCurrency').value : 'USD';
+        const data = {
+            date: date,
+            category: document.getElementById('expenseCategory').value.trim(),
+            vendor: document.getElementById('expenseVendor').value.trim(),
+            amount: amount,
+            currency: currency || 'USD',
+            paymentMethod: document.getElementById('expenseMethod').value.trim(),
+            notes: document.getElementById('expenseNotes').value.trim()
+        };
+
+        if (!data.date || !data.category || isNaN(data.amount)) {
+            uiError('Date, category, and amount are required.');
+            return;
+        }
+
+        if (editingId) {
+            const index = expenses.findIndex(function(e) { return e.id === editingId; });
+            expenses[index] = { ...expenses[index], ...data, id: editingId };
+        } else {
+            expenses.push({ ...data, id: Date.now() });
+        }
+
+        dbSetAll('expenses', expenses);
+        renderExpenses();
         closeModal();
     }
 
     // ======= INVOICE ITEMS UI (per-row searchable dropdown) =======
 
-    function onRowItemSearch(inputEl) {
+    function onRowItemSearch(inputEl, skipRefresh) {
+        if (!skipRefresh) {
+            refreshItemsFromServer().then(function() {
+                if (document.body.contains(inputEl)) onRowItemSearch(inputEl, true);
+            });
+            return;
+        }
+        refreshItemsFromDb();
         const term = (inputEl.value || '').toLowerCase();
         const row = inputEl.closest('.invoice-item');
         const select = row.querySelector('.invoice-item-select');
@@ -2498,10 +3671,12 @@ renderEmployees();
             ensureItemPricing(i);
             ensureItemTags(i);
 
+            const isSelected = currentVal && String(i.id) === String(currentVal);
+            if (!isSelected && isServiceItem(i)) return false;
+
             // Tag filter (if selected) - never hide already-selected item
             if (tagFilter) {
-                const sel = currentVal && String(i.id) === String(currentVal);
-                if (!sel && !itemHasTag(i, tagFilter)) return false;
+                if (!isSelected && !itemHasTag(i, tagFilter)) return false;
             }
 
             // Search term filter (name / part #)
@@ -2510,8 +3685,6 @@ renderEmployees();
                 const part = (i.partNumber || '').toLowerCase();
                 if (!name.includes(term) && !part.includes(term)) return false;
             }
-
-            const isSelected = currentVal && String(i.id) === String(currentVal);
 
             // Hide zero-stock items unless already selected (editing)
             const mainQty = getWarehouseQty(i, mainWid);
@@ -2563,6 +3736,7 @@ renderEmployees();
     }
 
     function addInvoiceItem(item) {
+        refreshItemsFromDb();
         ensureWarehouses();
         if (item === undefined) item = null;
         const container = document.getElementById('invoiceItems');
@@ -2575,8 +3749,10 @@ renderEmployees();
 
         const allOptions = (items || []).filter(function(i) {
                 ensureItemTags(i);
+                const isSelected = selectedItemId && String(i.id) === String(selectedItemId);
+                if (!isSelected && isServiceItem(i)) return false;
                 if (!tagFilter) return true;
-                if (selectedItemId && String(i.id) === String(selectedItemId)) return true;
+                if (isSelected) return true;
                 return itemHasTag(i, tagFilter);
             })
             .map(function(i) {
@@ -2714,6 +3890,84 @@ const div = document.createElement('div');
         calculateTotal();
     }
 
+        // SERVICE INVOICE ITEM (non-stock)
+    function addServiceInvoiceItem(item) {
+        refreshServiceItemsFromDb();
+        if (item === undefined) item = null;
+
+        const container = document.getElementById('invoiceItems');
+        if (!container) return;
+
+        const supplierOptions = suppliers.map(function(s) {
+            const selected = item && item.supplierId === s.id ? "selected" : "";
+            return `<option value="${s.id}" ${selected}>${s.name}</option>`;
+        }).join("");
+
+        const employeeOptions = employees.map(function(e) {
+            const selected = item && item.employeeId === e.id ? "selected" : "";
+            return `<option value="${e.id}" ${selected}>${e.name}${e.role ? " - " + e.role : ""}</option>`;
+        }).join("");
+
+        const serviceId = item && item.serviceItemId ? String(item.serviceItemId) : '';
+        let serviceLabel = '';
+        if (serviceId) {
+            const svc = (serviceItems || []).find(function(s) { return String(s.id) === serviceId; });
+            if (svc) {
+                const code = svc.code || '';
+                const name = svc.name || '';
+                serviceLabel = code && name ? (code + ' - ' + name) : (code || name);
+            } else if (item && item.name) {
+                serviceLabel = item.name;
+            }
+        } else if (item && item.name) {
+            serviceLabel = item.name;
+        }
+
+        const div = document.createElement("div");
+        div.className = "invoice-item invoice-item-service";
+
+        div.innerHTML = `
+            <div class="invoice-service-picker">
+                <input type="text" class="invoice-service-search" placeholder="Search service..." value="${_esc(serviceLabel)}"
+                    oninput="onRowServiceItemSearch(this)" onfocus="onRowServiceItemSearch(this)" onblur="onServiceSearchBlur(this)">
+                <input type="hidden" class="invoice-service-id" value="${_esc(serviceId)}">
+                <div class="service-dropdown"></div>
+            </div>
+
+            <select class="invoice-supplier-select">
+                <option value="">Supplier</option>
+                ${supplierOptions}
+            </select>
+
+            <select class="invoice-employee-select">
+                <option value="">Employee</option>
+                ${employeeOptions}
+            </select>
+
+            <input type="number" min="1" 
+                value="${item ? item.quantity : 1}" 
+                class="invoice-quantity" 
+                onchange="calculateTotal()" 
+                placeholder="Qty">
+
+            <input type="number" step="0.01" min="0"
+                value="${item ? item.price : 0}" 
+                class="invoice-price" 
+                onchange="calculateTotal()" 
+                placeholder="Price">
+
+            <button class="btn btn-danger btn-small" type="button" 
+                onclick="this.parentElement.remove(); calculateTotal()">&#x2716;</button>
+        `;
+
+        container.appendChild(div);
+
+        const svcInput = div.querySelector('.invoice-service-search');
+        if (svcInput && serviceLabel) svcInput.setAttribute('data-service-name', serviceLabel);
+
+        calculateTotal();
+    }
+
     
 
     function updateRowPartAndCost(rowEl, selectEl) {
@@ -2818,16 +4072,365 @@ function updateItemPrice(selectElement) {
         updateRemainingDisplay();
     }
 
+    // ======= INVOICE A ITEMS + TOTALS =======
+    function updateInvoiceARemainingDisplay() {
+        const totalEl = document.getElementById('invoiceATotal');
+        const amountInput = document.getElementById('invoiceAAmountPaid');
+        const remainingInput = document.getElementById('invoiceARemaining');
+
+        if (!totalEl || !amountInput || !remainingInput) return;
+
+        const total = parseFloat(totalEl.textContent) || 0;
+        const raw = amountInput.value;
+        let paid = parseFloat(raw);
+
+        if (isNaN(paid)) paid = 0;
+        if (paid < 0) {
+            paid = 0;
+            amountInput.value = 0;
+        } else if (paid > total) {
+            paid = total;
+            amountInput.value = total;
+        }
+
+        const remaining = total - paid;
+        remainingInput.value = remaining.toFixed(2);
+    }
+
+    function onInvoiceAAmountPaidChange() {
+        updateInvoiceARemainingDisplay();
+    }
+
+    function calculateInvoiceATotal() {
+        const rows = document.querySelectorAll('.invoice-a-item');
+        let total = 0;
+        rows.forEach(function(row) {
+            const qty = parseInt(row.querySelector('.invoice-a-quantity')?.value) || 0;
+            const price = parseFloat(row.querySelector('.invoice-a-price')?.value) || 0;
+            const tvaChecked = !!row.querySelector('.invoice-a-tva')?.checked;
+            const base = qty * price;
+            const tva = tvaChecked ? (base * 0.11) : 0;
+            const lineTotal = base + tva;
+            const lineEl = row.querySelector('.invoice-a-line-total');
+            if (lineEl) lineEl.textContent = lineTotal.toFixed(2);
+            total += lineTotal;
+        });
+        const totalEl = document.getElementById('invoiceATotal');
+        if (totalEl) totalEl.textContent = total.toFixed(2);
+        updateInvoiceARemainingDisplay();
+    }
+
+    function toggleInvoiceATvaDefault(checked) {
+        document.querySelectorAll('.invoice-a-tva').forEach(function(chk) {
+            chk.checked = !!checked;
+        });
+        calculateInvoiceATotal();
+    }
+
+    function onRowItemSearchA(inputEl, skipRefresh) {
+        if (!skipRefresh) {
+            refreshItemsFromServer().then(function() {
+                if (document.body.contains(inputEl)) onRowItemSearchA(inputEl, true);
+            });
+            return;
+        }
+        refreshItemsFromDb();
+        const term = (inputEl.value || '').toLowerCase();
+        const row = inputEl.closest('.invoice-a-item');
+        const select = row.querySelector('.invoice-a-item-select');
+        if (!select) return;
+
+        const currentVal = select.value;
+
+        const filtered = (items || []).filter(function(i) {
+            ensureItemPricing(i);
+            ensureItemTags(i);
+
+            const isSelected = currentVal && String(i.id) === String(currentVal);
+            if (!isSelected && isServiceItem(i)) return false;
+
+            if (term) {
+                const name = (i.name || '').toLowerCase();
+                const part = (i.partNumber || '').toLowerCase();
+                if (!name.includes(term) && !part.includes(term)) return false;
+            }
+            return true;
+        });
+
+        select.innerHTML =
+            '<option value="">Select Item</option>' +
+            filtered.map(function(i) {
+                const selected = currentVal && String(i.id) === String(currentVal) ? 'selected' : '';
+                const mainQty = getWarehouseQty(i, mainWid);
+                const labelPart = i.partNumber ? ' (' + i.partNumber + ')' : '';
+                const stockPart = ' [Main: ' + mainQty + ']';
+                return '<option value="' + i.id + '" ' +
+                    'data-price="' + (typeof i.price === 'number' ? i.price : 0) + '" ' +
+                    selected + '>' +
+                    i.name + labelPart + stockPart + ' - ' + (i.price || 0).toFixed(2) +
+                '</option>';
+            }).join('');
+
+        if (currentVal && filtered.some(function(i) { return String(i.id) === String(currentVal); })) {
+            select.value = currentVal;
+        }
+
+        if (term && filtered.length > 0) {
+            select.size = Math.min(filtered.length + 1, 6);
+            select.style.display = 'block';
+        } else {
+            select.size = 1;
+            select.style.display = '';
+        }
+    }
+
+    function addInvoiceAItem(item) {
+        refreshItemsFromDb();
+        ensureWarehouses();
+        if (item === undefined) item = null;
+
+        const container = document.getElementById('invoiceAItems');
+        if (!container) return;
+
+        const selectedItemId = item ? item.itemId : null;
+        const allOptions = (items || []).filter(function(i) {
+                ensureItemPricing(i);
+                ensureItemTags(i);
+                const isSelected = selectedItemId && String(i.id) === String(selectedItemId);
+                if (!isSelected && isServiceItem(i)) return false;
+                return true;
+            })
+            .map(function(i) {
+                const selected = selectedItemId && i.id === selectedItemId ? 'selected' : '';
+                const labelPart = i.partNumber ? ' (' + i.partNumber + ')' : '';
+                const stockPart = '';
+                return '<option value="' + i.id + '" data-price="' + i.price + '" ' + selected + '>' +
+                    i.name + labelPart + stockPart + ' - ' + i.price.toFixed(2) +
+                '</option>';
+            })
+            .join('');
+
+        const supplierOptions = suppliers.map(function(s) {
+            const selected = item && item.supplierId === s.id ? 'selected' : '';
+            return '<option value="' + s.id + '" ' + selected + '>' + s.name + '</option>';
+        }).join('');
+
+        const employeeOptions = employees.map(function(e) {
+            const selected = item && item.employeeId === e.id ? 'selected' : '';
+            return '<option value="' + e.id + '" ' + selected + '>' +
+                e.name + (e.role ? ' - ' + e.role : '') +
+            '</option>';
+        }).join('');
+
+        const tvaDefault = !!document.getElementById('invoiceATvaDefault')?.checked;
+        const tvaChecked = item && typeof item.tva === 'boolean' ? item.tva : tvaDefault;
+
+        const tr = document.createElement('tr');
+        tr.className = 'invoice-a-item';
+        tr.innerHTML = `
+            <td>
+                <input type="text" class="invoice-a-item-search" placeholder="Search item..." oninput="onRowItemSearchA(this)">
+                <select class="invoice-a-item-select" onchange="onInvoiceAItemSelectChange(this)">
+                    <option value="">Select Item</option>
+                    ${allOptions}
+                </select>
+            </td>
+            <td><input type="number" step="0.01" min="0" value="${item ? item.price : 0}" class="invoice-a-price" onchange="calculateInvoiceATotal()"></td>
+            <td><input type="number" min="1" value="${item ? item.quantity : 1}" class="invoice-a-quantity" onchange="calculateInvoiceATotal()"></td>
+            <td style="text-align:center;"><input type="checkbox" class="invoice-a-tva" ${tvaChecked ? 'checked' : ''} onchange="calculateInvoiceATotal()"></td>
+            <td class="invoice-a-line-total">0.00</td>
+            <td>
+                <select class="invoice-a-employee-select">
+                    <option value="">Select Employee</option>
+                    ${employeeOptions}
+                </select>
+            </td>
+            <td>
+                <select class="invoice-a-supplier-select">
+                    <option value="">Select Supplier</option>
+                    ${supplierOptions}
+                </select>
+            </td>
+            <td><button class="btn btn-danger btn-small" type="button" onclick="this.closest('tr').remove(); calculateInvoiceATotal()">✖</button></td>
+        `;
+
+        container.appendChild(tr);
+
+        if (item && selectedItemId) {
+            const selectEl = tr.querySelector('.invoice-a-item-select');
+            selectEl.value = String(selectedItemId);
+            const priceInput = tr.querySelector('.invoice-a-price');
+            const price =
+                typeof item.price === 'number'
+                    ? item.price
+                    : (items.find(function(i) { return i.id === selectedItemId; }) || {}).price || 0;
+            priceInput.value = price.toFixed(2);
+        }
+
+        calculateInvoiceATotal();
+    }
+
+    function addCustomInvoiceAItem(item) {
+        if (item === undefined) item = null;
+        const container = document.getElementById('invoiceAItems');
+        if (!container) return;
+
+        const supplierOptions = suppliers.map(function(s) {
+            const selected = item && item.supplierId === s.id ? 'selected' : '';
+            return '<option value="' + s.id + '" ' + selected + '>' + s.name + '</option>';
+        }).join('');
+
+        const employeeOptions = employees.map(function(e) {
+            const selected = item && item.employeeId === e.id ? 'selected' : '';
+            return '<option value="' + e.id + '" ' + selected + '>' +
+                e.name + (e.role ? ' - ' + e.role : '') +
+            '</option>';
+        }).join('');
+
+        const tvaDefault = !!document.getElementById('invoiceATvaDefault')?.checked;
+        const tvaChecked = item && typeof item.tva === 'boolean' ? item.tva : tvaDefault;
+
+        const tr = document.createElement('tr');
+        tr.className = 'invoice-a-item invoice-a-item-custom';
+        tr.innerHTML = `
+            <td>
+                <input type="text" class="invoice-a-custom-name" placeholder="Custom item name" value="${item && item.name ? item.name : ''}">
+            </td>
+            <td><input type="number" step="0.01" min="0" value="${item ? item.price : 0}" class="invoice-a-price" onchange="calculateInvoiceATotal()"></td>
+            <td><input type="number" min="1" value="${item ? item.quantity : 1}" class="invoice-a-quantity" onchange="calculateInvoiceATotal()"></td>
+            <td style="text-align:center;"><input type="checkbox" class="invoice-a-tva" ${tvaChecked ? 'checked' : ''} onchange="calculateInvoiceATotal()"></td>
+            <td class="invoice-a-line-total">0.00</td>
+            <td>
+                <select class="invoice-a-employee-select">
+                    <option value="">Select Employee</option>
+                    ${employeeOptions}
+                </select>
+            </td>
+            <td>
+                <select class="invoice-a-supplier-select">
+                    <option value="">Select Supplier</option>
+                    ${supplierOptions}
+                </select>
+            </td>
+            <td><button class="btn btn-danger btn-small" type="button" onclick="this.closest('tr').remove(); calculateInvoiceATotal()">✖</button></td>
+        `;
+
+        container.appendChild(tr);
+        calculateInvoiceATotal();
+    }
+
+        function addServiceInvoiceAItem(item) {
+        refreshServiceItemsFromDb();
+        if (item === undefined) item = null;
+        const container = document.getElementById('invoiceAItems');
+        if (!container) return;
+
+        const supplierOptions = suppliers.map(function(s) {
+            const selected = item && item.supplierId === s.id ? 'selected' : '';
+            return '<option value="' + s.id + '" ' + selected + '>' + s.name + '</option>';
+        }).join('');
+
+        const employeeOptions = employees.map(function(e) {
+            const selected = item && item.employeeId === e.id ? 'selected' : '';
+            return '<option value="' + e.id + '" ' + selected + '>' +
+                e.name + (e.role ? ' - ' + e.role : '') +
+            '</option>';
+        }).join('');
+
+        const serviceId = item && item.serviceItemId ? String(item.serviceItemId) : '';
+        let serviceLabel = '';
+        if (serviceId) {
+            const svc = (serviceItems || []).find(function(s) { return String(s.id) === serviceId; });
+            if (svc) {
+                const code = svc.code || '';
+                const name = svc.name || '';
+                serviceLabel = code && name ? (code + ' - ' + name) : (code || name);
+            } else if (item && item.name) {
+                serviceLabel = item.name;
+            }
+        } else if (item && item.name) {
+            serviceLabel = item.name;
+        }
+
+        const tvaDefault = !!document.getElementById('invoiceATvaDefault')?.checked;
+        const tvaChecked = item && typeof item.tva === 'boolean' ? item.tva : tvaDefault;
+
+        const tr = document.createElement('tr');
+        tr.className = 'invoice-a-item invoice-a-item-service';
+        tr.innerHTML = `
+            <td>
+                <div class="invoice-a-service-picker">
+                    <input type="text" class="invoice-a-service-search" placeholder="Search service..." value="${_esc(serviceLabel)}"
+                        oninput="onRowServiceItemSearchA(this)" onfocus="onRowServiceItemSearchA(this)" onblur="onServiceSearchBlur(this)">
+                    <input type="hidden" class="invoice-a-service-id" value="${_esc(serviceId)}">
+                    <div class="service-dropdown"></div>
+                </div>
+            </td>
+            <td><input type="number" step="0.01" min="0" value="${item ? item.price : 0}" class="invoice-a-price" onchange="calculateInvoiceATotal()"></td>
+            <td><input type="number" min="1" value="${item ? item.quantity : 1}" class="invoice-a-quantity" onchange="calculateInvoiceATotal()"></td>
+            <td style="text-align:center;"><input type="checkbox" class="invoice-a-tva" ${tvaChecked ? 'checked' : ''} onchange="calculateInvoiceATotal()"></td>
+            <td class="invoice-a-line-total">0.00</td>
+            <td>
+                <select class="invoice-a-employee-select">
+                    <option value="">Select Employee</option>
+                    ${employeeOptions}
+                </select>
+            </td>
+            <td>
+                <select class="invoice-a-supplier-select">
+                    <option value="">Select Supplier</option>
+                    ${supplierOptions}
+                </select>
+            </td>
+            <td><button class="btn btn-danger btn-small" type="button" onclick="this.closest('tr').remove(); calculateInvoiceATotal()">&#x2716;</button></td>
+        `;
+
+        container.appendChild(tr);
+
+        const svcInput = tr.querySelector('.invoice-a-service-search');
+        if (svcInput && serviceLabel) svcInput.setAttribute('data-service-name', serviceLabel);
+
+        calculateInvoiceATotal();
+    }
+
+    function updateInvoiceAItemPrice(selectElement) {
+        const row = selectElement.closest('.invoice-a-item');
+        const selectedOption = selectElement.options[selectElement.selectedIndex];
+        const price = parseFloat(selectedOption.getAttribute('data-price')) || 0;
+        const priceInput = row.querySelector('.invoice-a-price');
+        if (priceInput) priceInput.value = price.toFixed(2);
+        calculateInvoiceATotal();
+    }
+
+    function onInvoiceAItemSelectChange(selectElement) {
+        if (!selectElement.value) return;
+
+        updateInvoiceAItemPrice(selectElement);
+
+        selectElement.size = 1;
+        selectElement.style.display = '';
+        const row = selectElement.closest('.invoice-a-item');
+        const searchInput = row.querySelector('.invoice-a-item-search');
+        if (searchInput) searchInput.value = '';
+
+        const container = document.getElementById('invoiceAItems');
+        const rows = container ? container.querySelectorAll('.invoice-a-item') : [];
+        const lastRow = rows[rows.length - 1];
+        if (lastRow && lastRow.contains(selectElement)) {
+            addInvoiceAItem();
+        }
+    }
+
     function updateCarOptions(selectedCarId) {
         if (selectedCarId === undefined) selectedCarId = null;
-        const clientSelect = document.getElementById('invoiceClientId');
+        const clientIdInput = document.getElementById('invoiceClientId');
         const carSelect = document.getElementById('invoiceCarId');
-        if (!clientSelect || !carSelect) return;
+        if (!clientIdInput || !carSelect) return;
 
         const carSearchInput = document.getElementById('invoiceCarSearch');
         if (carSearchInput) carSearchInput.value = '';
 
-        const clientIdVal = clientSelect.value;
+        const clientIdVal = clientIdInput.value;
         const clientId = clientIdVal ? parseInt(clientIdVal) : null;
         const clientCars = clientId ? cars.filter(function(c) { return c.clientId === clientId; }) : [];
 
@@ -2843,94 +4446,152 @@ function updateItemPrice(selectElement) {
 
     // ✅ Auto-select client when a car is selected in invoice
     function onInvoiceCarSelectChange(selectedCarId) {
-    const clientSelect = document.getElementById('invoiceClientId');
+    const clientIdInput = document.getElementById('invoiceClientId');
+    const clientSearch = document.getElementById('invoiceClientSearch');
     const carSelect = document.getElementById('invoiceCarId');
-    if (!clientSelect || !carSelect) return;
+    if (!clientIdInput || !carSelect) return;
 
     if (!selectedCarId) return;
 
-    // ✅ Always compare as string (safe for DB values)
+    // Always compare as string (safe for DB values)
     const car = (Array.isArray(cars) ? cars : []).find(function(c) {
         return String(c.id) === String(selectedCarId);
     });
     if (!car) return;
 
-    // ✅ Auto-select the client (even if not in the first 20 loaded)
     if (car.clientId != null) {
         const cid = String(car.clientId);
-
-        // if option doesn't exist, inject it
-        const hasOption = Array.from(clientSelect.options || []).some(function(o){ return String(o.value) === cid; });
-        if (!hasOption) {
+        clientIdInput.value = cid;
+        if (clientSearch) {
             const cl = (Array.isArray(clients) ? clients : []).find(function(x){ return String(x.id) === cid; });
-            const opt = document.createElement('option');
-            opt.value = cid;
-            opt.textContent = cl ? (cl.name || ('Client #' + cid)) : ('Client #' + cid);
-            clientSelect.appendChild(opt);
+            const label = cl ? (cl.phone ? (cl.name + ' - ' + cl.phone) : (cl.name || ('Client #' + cid))) : ('Client #' + cid);
+            clientSearch.value = label;
+            clientSearch.setAttribute('data-client-name', label);
         }
-
-        clientSelect.value = cid;
     }
 
-    // ✅ Refresh car dropdown safely using your optimized filter
-    // (keeps performance + avoids dumping all cars)
+    // Refresh car dropdown safely using your optimized filter
     if (typeof filterInvoiceCarOptions === "function") {
         filterInvoiceCarOptions();
         carSelect.value = String(selectedCarId); // keep selected car
     }
 }
 
+
+function onClientSearchBlur(inputEl) {
+    const picker = inputEl ? inputEl.closest('.invoice-client-picker, .invoice-a-client-picker') : null;
+    const dropdown = picker ? picker.querySelector('.client-dropdown') : null;
+    if (!dropdown) return;
+    setTimeout(function() {
+        dropdown.style.display = 'none';
+    }, 120);
+}
+
+function onInvoiceClientOptionMouseDown(optionEl) {
+    const id = optionEl.getAttribute('data-id') || '';
+    const label = optionEl.getAttribute('data-label') || optionEl.textContent || '';
+
+    const inputEl = document.getElementById('invoiceClientSearch');
+    const idInput = document.getElementById('invoiceClientId');
+    if (idInput) idInput.value = id;
+    if (inputEl) {
+        inputEl.value = label;
+        inputEl.setAttribute('data-client-name', label);
+    }
+
+    const picker = inputEl ? inputEl.closest('.invoice-client-picker') : null;
+    const dropdown = picker ? picker.querySelector('.client-dropdown') : null;
+    if (dropdown) dropdown.style.display = 'none';
+
+    if (typeof updateCarOptions === 'function') updateCarOptions();
+}
+
+function onInvoiceAClientOptionMouseDown(optionEl) {
+    const id = optionEl.getAttribute('data-id') || '';
+    const label = optionEl.getAttribute('data-label') || optionEl.textContent || '';
+
+    const inputEl = document.getElementById('invoiceAClientSearch');
+    const idInput = document.getElementById('invoiceAClientId');
+    if (idInput) idInput.value = id;
+    if (inputEl) {
+        inputEl.value = label;
+        inputEl.setAttribute('data-client-name', label);
+    }
+
+    const picker = inputEl ? inputEl.closest('.invoice-a-client-picker') : null;
+    const dropdown = picker ? picker.querySelector('.client-dropdown') : null;
+    if (dropdown) dropdown.style.display = 'none';
+
+    if (typeof onInvoiceAClientChange === 'function') onInvoiceAClientChange();
+}
+
 function filterInvoiceClientOptions(typed) {
   const inputEl = document.getElementById('invoiceClientSearch');
-  const select  = document.getElementById('invoiceClientId');
-  if (!select) return;
+  const picker = inputEl ? inputEl.closest('.invoice-client-picker') : null;
+  const dropdown = picker ? picker.querySelector('.client-dropdown') : null;
+  if (!inputEl || !dropdown) return;
 
   const term = String(
     (typed != null ? typed : (inputEl ? inputEl.value : '')) || ''
   ).toLowerCase().trim();
 
-  const MAX = 60;
-
-  // Use the cache you already built
+  try { rebuildInvoiceClientCache(); } catch (e) {}
   const list = (Array.isArray(invoiceClientCache) && invoiceClientCache.length)
     ? invoiceClientCache
     : (clients || []);
 
-  // rebuild options
-  let html = '<option value="">Select Client</option>';
-  let shown = 0;
+  const idInput = document.getElementById('invoiceClientId');
+  const prevLabel = inputEl.getAttribute('data-client-name') || '';
+  if (idInput) {
+    if (prevLabel && prevLabel !== inputEl.value) {
+      idInput.value = '';
+      inputEl.setAttribute('data-client-name', '');
+    } else if (!prevLabel && idInput.value && inputEl.value.trim() === '') {
+      idInput.value = '';
+    }
+  }
 
+  if (!term) {
+    dropdown.style.display = 'none';
+    return;
+  }
+
+  const MAX = 60;
+  let shown = 0;
+  const filtered = [];
   for (let i = 0; i < list.length && shown < MAX; i++) {
     const c = list[i] || {};
     const name  = String(c.name || '').toLowerCase();
     const phone = String(c.phone || '').toLowerCase();
-
     if (!term || name.includes(term) || phone.includes(term)) {
-      const label = (c.phone ? `${c.name} - ${c.phone}` : (c.name || 'Client'));
-      html += `<option value="${c.id}">${label}</option>`;
+      filtered.push(c);
       shown++;
     }
   }
 
-  select.innerHTML = html;
+  dropdown.innerHTML = filtered.map(function(c) {
+    const label = (c.phone ? (c.name + ' - ' + c.phone) : (c.name || 'Client'));
+    const safeLabel = _esc(label);
+    return '<div class="client-option" data-id="' + _esc(c.id) + '" data-label="' + safeLabel + '" onmousedown="onInvoiceClientOptionMouseDown(this)">' + safeLabel + '</div>';
+  }).join('');
 
-  // auto open dropdown while typing
-  select.size = Math.min(shown + 1, MAX);
+  dropdown.style.display = filtered.length ? 'block' : 'none';
 }
 
-    function filterInvoiceCarOptions() {
+
+function filterInvoiceCarOptions() {
     const input = document.getElementById('invoiceCarSearch');
     const select = document.getElementById('invoiceCarId');
-    const clientSelect = document.getElementById('invoiceClientId');
-    if (!input || !select || !clientSelect) return;
+    const clientIdInput = document.getElementById('invoiceClientId');
+    if (!input || !select || !clientIdInput) return;
 
     const term = String(input.value || '').trim().toLowerCase();
-    const clientIdVal = clientSelect.value;
+    const clientIdVal = clientIdInput.value;
     const clientId = clientIdVal ? parseInt(clientIdVal) : null;
 
     const currentValue = select.value;
 
-    // ✅ Performance: if no client selected AND no search term, don't dump all cars
+    // Performance: if no client selected AND no search term, don't dump all cars
     if (!clientId && !term) {
         let html = '<option value="">Select Car</option>';
         if (currentValue) {
@@ -2941,7 +4602,7 @@ function filterInvoiceClientOptions(typed) {
                 '</option>';
             }
         } else {
-            html += '<option value="" disabled>Type plate / VIN / model to search…</option>';
+            html += '<option value="" disabled>Type plate / VIN / model to search...</option>';
         }
         select.innerHTML = html;
         select.size = 1;
@@ -2981,7 +4642,7 @@ function filterInvoiceClientOptions(typed) {
                 (c.year || '') + ' ' + (c.make || '') + ' ' + (c.model || '') + ' - ' + (c.plate || '') +
             '</option>';
         }).join('') +
-        ((filtered.length >= MAX) ? '<option value="" disabled>Showing first ' + MAX + ' results…</option>' : '');
+        ((filtered.length >= MAX) ? '<option value="" disabled>Showing first ' + MAX + ' results...</option>' : '');
 
     if (currentValue && filtered.some(function(c) { return String(c.id) === currentValue; })) {
         select.value = currentValue;
@@ -3001,6 +4662,236 @@ function filterInvoiceClientOptions(typed) {
         onInvoiceCarSelectChange(this.value);
     };
 }
+
+
+function filterInvoiceAClientOptions(typed) {
+  const inputEl = document.getElementById('invoiceAClientSearch');
+  const picker = inputEl ? inputEl.closest('.invoice-a-client-picker') : null;
+  const dropdown = picker ? picker.querySelector('.client-dropdown') : null;
+  if (!inputEl || !dropdown) return;
+
+  const term = String(
+    (typed != null ? typed : (inputEl ? inputEl.value : '')) || ''
+  ).toLowerCase().trim();
+
+  try { rebuildInvoiceClientCache(); } catch (e) {}
+  const list = (Array.isArray(invoiceClientCache) && invoiceClientCache.length)
+    ? invoiceClientCache
+    : (clients || []);
+
+  const idInput = document.getElementById('invoiceAClientId');
+  const prevLabel = inputEl.getAttribute('data-client-name') || '';
+  if (idInput) {
+    if (prevLabel && prevLabel !== inputEl.value) {
+      idInput.value = '';
+      inputEl.setAttribute('data-client-name', '');
+    } else if (!prevLabel && idInput.value && inputEl.value.trim() === '') {
+      idInput.value = '';
+    }
+  }
+
+  if (!term) {
+    dropdown.style.display = 'none';
+    return;
+  }
+
+  const MAX = 60;
+  let shown = 0;
+  const filtered = [];
+  for (let i = 0; i < list.length && shown < MAX; i++) {
+    const c = list[i] || {};
+    const name  = String(c.name || '').toLowerCase();
+    const phone = String(c.phone || '').toLowerCase();
+    if (!term || name.includes(term) || phone.includes(term)) {
+      filtered.push(c);
+      shown++;
+    }
+  }
+
+  dropdown.innerHTML = filtered.map(function(c) {
+    const label = (c.phone ? (c.name + ' - ' + c.phone) : (c.name || 'Client'));
+    const safeLabel = _esc(label);
+    return '<div class="client-option" data-id="' + _esc(c.id) + '" data-label="' + safeLabel + '" onmousedown="onInvoiceAClientOptionMouseDown(this)">' + safeLabel + '</div>';
+  }).join('');
+
+  dropdown.style.display = filtered.length ? 'block' : 'none';
+}
+
+
+function updateInvoiceACarOptions(selectedCarId) {
+    if (selectedCarId === undefined) selectedCarId = null;
+    const clientIdInput = document.getElementById('invoiceAClientId');
+    const carSelect = document.getElementById('invoiceACarId');
+    if (!clientIdInput || !carSelect) return;
+
+    const carSearchInput = document.getElementById('invoiceACarSearch');
+    if (carSearchInput) carSearchInput.value = '';
+
+    const clientIdVal = clientIdInput.value;
+    const clientId = clientIdVal ? parseInt(clientIdVal) : null;
+    const clientCars = clientId ? cars.filter(function(c) { return c.clientId === clientId; }) : [];
+
+    carSelect.innerHTML = '<option value="">Select Car</option>' +
+        clientCars.map(function(c) {
+            return '<option value="' + c.id + '">' + c.year + ' ' + c.make + ' ' + c.model + ' - ' + c.plate + '</option>';
+        }).join('');
+
+    if (selectedCarId) {
+        carSelect.value = String(selectedCarId);
+    }
+}
+
+
+function filterInvoiceACarOptions() {
+    const input = document.getElementById('invoiceACarSearch');
+    const select = document.getElementById('invoiceACarId');
+    const clientIdInput = document.getElementById('invoiceAClientId');
+    if (!input || !select || !clientIdInput) return;
+
+    const term = String(input.value || '').trim().toLowerCase();
+    const clientIdVal = clientIdInput.value;
+    const clientId = clientIdVal ? parseInt(clientIdVal) : null;
+
+    const currentValue = select.value;
+
+    if (!clientId && !term) {
+        let html = '<option value="">Select Car</option>';
+        if (currentValue) {
+            const cur = (cars || []).find(function(c){ return String(c.id) === String(currentValue); });
+            if (cur) {
+                html += '<option value="' + cur.id + '" selected>' +
+                    (cur.year || '') + ' ' + (cur.make || '') + ' ' + (cur.model || '') + ' - ' + (cur.plate || '') +
+                '</option>';
+            }
+        } else {
+            html += '<option value="" disabled>Type plate / VIN / model to search...</option>';
+        }
+        select.innerHTML = html;
+        select.size = 1;
+        select.style.display = '';
+        select.onchange = function () { onInvoiceACarSelectChange(this.value); };
+        return;
+    }
+
+    let baseCars = [];
+    if (clientId) {
+        baseCars = (cars || []).filter(function(c) { return c.clientId === clientId; });
+    } else {
+        baseCars = cars || [];
+    }
+
+    const MAX = 200;
+    const filtered = baseCars.filter(function(car) {
+        if (!term) return true;
+        const plate = (car.plate || '').toLowerCase();
+        const vin = (car.vin || '').toLowerCase();
+        const make = (car.make || '').toLowerCase();
+        const model = (car.model || '').toLowerCase();
+        const year = String(car.year || '').toLowerCase();
+        const modelYear = (make + ' ' + model + ' ' + year).trim();
+        return (
+            plate.includes(term) ||
+            vin.includes(term) ||
+            modelYear.includes(term)
+        );
+    }).slice(0, MAX);
+
+    select.innerHTML =
+        '<option value="">Select Car</option>' +
+        filtered.map(function(c) {
+            return '<option value="' + c.id + '">' +
+                (c.year || '') + ' ' + (c.make || '') + ' ' + (c.model || '') + ' - ' + (c.plate || '') +
+            '</option>';
+        }).join('') +
+        ((filtered.length >= MAX) ? '<option value="" disabled>Showing first ' + MAX + ' results...</option>' : '');
+
+    if (currentValue && filtered.some(function(c) { return String(c.id) === currentValue; })) {
+        select.value = currentValue;
+    }
+
+    if (term && filtered.length > 0) {
+        select.size = Math.min(filtered.length + 1, 6);
+        select.style.display = 'block';
+    } else {
+        select.size = 1;
+        select.style.display = '';
+    }
+
+    select.onchange = function () {
+        this.size = 1;
+        this.style.display = '';
+        onInvoiceACarSelectChange(this.value);
+    };
+}
+
+
+function onInvoiceAClientChange() {
+    const clientIdInput = document.getElementById('invoiceAClientId');
+    const phoneInput = document.getElementById('invoiceAClientPhone');
+    if (!clientIdInput) return;
+
+    const clientIdVal = clientIdInput.value;
+    const clientId = clientIdVal ? parseInt(clientIdVal) : null;
+    const client = clientId ? clients.find(function(c){ return c.id === clientId; }) : null;
+
+    if (phoneInput) phoneInput.value = client && client.phone ? client.phone : '';
+
+    updateInvoiceACarOptions();
+
+    const reg = document.getElementById('invoiceARegistration');
+    const chassis = document.getElementById('invoiceAChassis');
+    if (reg && !document.getElementById('invoiceACarId')?.value) reg.value = '';
+    if (chassis && !document.getElementById('invoiceACarId')?.value) chassis.value = '';
+}
+
+
+function onInvoiceACarSelectChange(selectedCarId) {
+    const clientIdInput = document.getElementById('invoiceAClientId');
+    const clientSearch = document.getElementById('invoiceAClientSearch');
+    const carSelect = document.getElementById('invoiceACarId');
+    if (!clientIdInput || !carSelect) return;
+
+    if (!selectedCarId) {
+        const reg = document.getElementById('invoiceARegistration');
+        const chassis = document.getElementById('invoiceAChassis');
+        if (reg) reg.value = '';
+        if (chassis) chassis.value = '';
+        return;
+    }
+
+    const car = (Array.isArray(cars) ? cars : []).find(function(c) {
+        return String(c.id) === String(selectedCarId);
+    });
+    if (!car) return;
+
+    if (car.clientId != null) {
+        const cid = String(car.clientId);
+        clientIdInput.value = cid;
+        if (clientSearch) {
+            const cl = (Array.isArray(clients) ? clients : []).find(function(x){ return String(x.id) === cid; });
+            const label = cl ? (cl.phone ? (cl.name + ' - ' + cl.phone) : (cl.name || ('Client #' + cid))) : ('Client #' + cid);
+            clientSearch.value = label;
+            clientSearch.setAttribute('data-client-name', label);
+        }
+    }
+
+    if (typeof filterInvoiceACarOptions === "function") {
+        filterInvoiceACarOptions();
+        carSelect.value = String(selectedCarId);
+    }
+
+    const reg = document.getElementById('invoiceARegistration');
+    const chassis = document.getElementById('invoiceAChassis');
+    if (reg) reg.value = car.plate || '';
+    if (chassis) chassis.value = car.vin || '';
+
+    const phoneInput = document.getElementById('invoiceAClientPhone');
+    if (phoneInput) {
+        const cl = (Array.isArray(clients) ? clients : []).find(function(x){ return String(x.id) === String(car.clientId); });
+        phoneInput.value = cl && cl.phone ? cl.phone : '';
+    }
+}
+
 
 
     // ======= SAVE INVOICE (STOCK + CUSTOM ITEMS) =======
@@ -3023,7 +4914,7 @@ function openInvoiceSavedModal(invoiceId) {
 
     const itemsHtml = (inv.items || []).map(line => {
         const item = line.itemId ? items.find(i => i.id === line.itemId) : null;
-        const name = line.custom ? (line.customName || '(Custom)') : (item ? item.name : 'Unknown');
+        const name = line.custom ? (line.customName || line.name || '(Custom)') : (item ? item.name : (line.name || 'Unknown'));
         const qty = safeInt(line.quantity);
         const price = parseFloat(line.price) || 0;
         const total = qty * price;
@@ -3102,6 +4993,97 @@ function openInvoiceSavedModal(invoiceId) {
     modal.classList.add('active');
 }
 
+function openInvoiceASavedModal(invoiceId) {
+    const inv = invoices.find(x => x.id === invoiceId);
+    if (!inv) return;
+
+    currentType = 'invoiceA';
+    editingId = invoiceId;
+
+    const modal = document.getElementById('modal');
+    const title = document.getElementById('modalTitle');
+    const body = document.getElementById('modalBody');
+
+    const client = clients.find(c => c.id === inv.clientId);
+    const car = inv.carId ? cars.find(c => c.id === inv.carId) : null;
+
+    const itemsHtml = (inv.items || []).map(line => {
+        const qty = safeInt(line.quantity);
+        const price = parseFloat(line.price) || 0;
+        const base = qty * price;
+        const tva = line.tva ? base * 0.11 : 0;
+        const total = base + tva;
+
+        return `
+          <tr>
+            <td>${escapeHtml(line.name || '')}</td>
+            <td>${price.toFixed(2)}</td>
+            <td>${qty}</td>
+            <td>${tva.toFixed(2)}</td>
+            <td>${total.toFixed(2)}</td>
+          </tr>
+        `;
+    }).join('');
+
+    const f = getInvoiceFinancials(inv);
+
+    title.textContent = "Invoice A Saved ✅ (View)";
+
+    body.innerHTML = `
+        <div class="form-group">
+            <label>Client</label>
+            <input type="text" value="${client ? client.name : 'N/A'}" disabled>
+        </div>
+        <div class="form-group">
+            <label>Car</label>
+            <input type="text" value="${car ? (car.make + ' ' + car.model + (car.plate ? (' - ' + car.plate) : '')) : 'N/A'}" disabled>
+        </div>
+        <div class="form-group">
+            <label>Date</label>
+            <input type="text" value="${inv.date || ''}" disabled>
+        </div>
+        <div class="form-group">
+            <label>Fiscal Reg</label>
+            <input type="text" value="${inv.fiscalReg || ''}" disabled>
+        </div>
+
+        <div style="margin-top:12px; font-weight:700;">Items</div>
+        <div style="overflow:auto; margin-top:8px;">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Description</th><th>Price</th><th>Qty</th><th>TVA(11%)</th><th>Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${itemsHtml || `<tr><td colspan="5">No items</td></tr>`}
+            </tbody>
+          </table>
+        </div>
+
+        <div class="form-group" style="margin-top:10px;">
+            <label>Invoice Total</label>
+            <input type="text" value="${f.total.toFixed(2)}" disabled>
+        </div>
+        <div class="form-group">
+            <label>Amount Paid</label>
+            <input type="text" value="${f.amountPaid.toFixed(2)}" disabled>
+        </div>
+        <div class="form-group">
+            <label>Remaining</label>
+            <input type="text" value="${f.remaining.toFixed(2)}" disabled>
+        </div>
+
+        <div class="modal-footer">
+            <button class="icon-btn edit" title="Edit" onclick="openModal('invoiceA', ${invoiceId})">✏️</button>
+            <button class="btn btn-success" onclick="printInvoiceA(${invoiceId})">Print</button>
+            <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+        </div>
+    `;
+
+    modal.classList.add('active');
+}
+
 function saveInvoice() {
         if (!requireAdminAction()) return;        const clientId = parseInt(document.getElementById('invoiceClientId').value);
         const carIdVal = document.getElementById('invoiceCarId').value;
@@ -3113,6 +5095,8 @@ function saveInvoice() {
         document.querySelectorAll('.invoice-item').forEach(function(el) {
             const select = el.querySelector('.invoice-item-select');
             const customNameInput = el.querySelector('.invoice-custom-name');
+            const serviceIdInput = el.querySelector('.invoice-service-id');
+            const serviceSearch = el.querySelector('.invoice-service-search');
             const supplierSelect = el.querySelector('.invoice-supplier-select');
             const employeeSelect = el.querySelector('.invoice-employee-select');
             const warehouseSelect = el.querySelector('.invoice-warehouse-select');
@@ -3132,11 +5116,37 @@ function saveInvoice() {
 
             let itemId = null;
             let name = '';
+            let serviceItemId = null;
 
             if (select && select.value) {
                 itemId = parseInt(select.value);
                 const item = items.find(function(i) { return i.id === itemId; });
                 name = item ? item.name : '';
+            } else if (serviceIdInput && serviceIdInput.value) {
+                serviceItemId = parseInt(serviceIdInput.value);
+                const svc = (serviceItems || []).find(function(s) { return s.id === serviceItemId; });
+                name = svc ? svc.name : '';
+                if (!name && serviceSearch && serviceSearch.value.trim()) {
+                    name = serviceSearch.value.trim();
+                }
+                if (!name && serviceSearch && serviceSearch.getAttribute('data-service-name')) {
+                    name = serviceSearch.getAttribute('data-service-name');
+                }
+            } else if (serviceSearch && serviceSearch.value.trim()) {
+                const raw = serviceSearch.value.trim();
+                const term = raw.toLowerCase();
+                const svcMatch = (serviceItems || []).find(function(s) {
+                    const code = (s.code || '').toLowerCase();
+                    const sname = (s.name || '').toLowerCase();
+                    const label = code && sname ? (code + ' - ' + sname) : (code || sname);
+                    return code === term || sname === term || label.toLowerCase() === term;
+                });
+                if (svcMatch) {
+                    serviceItemId = svcMatch.id;
+                    name = svcMatch.name || raw;
+                } else {
+                    name = raw;
+                }
             } else if (customNameInput && customNameInput.value.trim()) {
                 name = customNameInput.value.trim();
             }
@@ -3151,7 +5161,8 @@ function saveInvoice() {
                 warehouseId: warehouseId,
                 price: price,
                 quantity: quantity,
-                custom: !itemId
+                custom: !itemId,
+                serviceItemId: serviceItemId || null
             });
         });
         
@@ -3168,6 +5179,7 @@ function saveInvoice() {
         if (amountPaid > total) amountPaid = total;
         const remaining = total - amountPaid;
         const paymentStatus = remaining <= 0 ? 'paid' : 'unpaid';
+        const paidAt = paymentStatus === 'paid' ? date : null;
 
         let savedId = editingId;
 
@@ -3219,7 +5231,8 @@ function saveInvoice() {
             items: invoiceItems,
             total: total,
             amountPaid: amountPaid,
-            paymentStatus: paymentStatus
+            paymentStatus: paymentStatus,
+            paidAt: paidAt
         };
         
         if (editingId) {
@@ -3242,9 +5255,159 @@ renderInvoices();
         openInvoiceSavedModal(savedId);
     }
 
+    function saveInvoiceA() {
+        if (!requireAdminAction()) return;
+
+        const clientId = parseInt(document.getElementById('invoiceAClientId').value);
+        const carIdVal = document.getElementById('invoiceACarId').value;
+        const carId = carIdVal ? parseInt(carIdVal) : null;
+        const date = document.getElementById('invoiceADate').value;
+        const fiscalReg = (document.getElementById('invoiceAFiscalReg')?.value || '').trim();
+        const tvaRegNo = (document.getElementById('invoiceATvaReg')?.value || '').trim();
+        const tvaDefault = !!document.getElementById('invoiceATvaDefault')?.checked;
+
+        const invoiceItems = [];
+        document.querySelectorAll('#invoiceAItems .invoice-a-item').forEach(function(el) {
+            const select = el.querySelector('.invoice-a-item-select');
+            const customNameInput = el.querySelector('.invoice-a-custom-name');
+            const serviceIdInput = el.querySelector('.invoice-a-service-id');
+            const serviceSearch = el.querySelector('.invoice-a-service-search');
+            const supplierSelect = el.querySelector('.invoice-a-supplier-select');
+            const employeeSelect = el.querySelector('.invoice-a-employee-select');
+
+            const supplierIdVal = supplierSelect ? supplierSelect.value : '';
+            const supplierId = supplierIdVal ? parseInt(supplierIdVal) : null;
+            const employeeIdVal = employeeSelect ? employeeSelect.value : '';
+            const employeeId = employeeIdVal ? parseInt(employeeIdVal) : null;
+
+            const mainWid = getMainWarehouseId();
+            const warehouseId = mainWid;
+
+            const quantity = parseInt(el.querySelector('.invoice-a-quantity').value) || 0;
+            const price = parseFloat(el.querySelector('.invoice-a-price').value) || 0;
+            const tva = !!el.querySelector('.invoice-a-tva')?.checked;
+
+            let itemId = null;
+            let name = '';
+            let serviceItemId = null;
+
+            if (select && select.value) {
+                itemId = parseInt(select.value);
+                const item = items.find(function(i) { return i.id === itemId; });
+                name = item ? item.name : '';
+            } else if (serviceIdInput && serviceIdInput.value) {
+                serviceItemId = parseInt(serviceIdInput.value);
+                const svc = (serviceItems || []).find(function(s) { return s.id === serviceItemId; });
+                name = svc ? svc.name : '';
+                if (!name && serviceSearch && serviceSearch.value.trim()) {
+                    name = serviceSearch.value.trim();
+                }
+                if (!name && serviceSearch && serviceSearch.getAttribute('data-service-name')) {
+                    name = serviceSearch.getAttribute('data-service-name');
+                }
+            } else if (serviceSearch && serviceSearch.value.trim()) {
+                const raw = serviceSearch.value.trim();
+                const term = raw.toLowerCase();
+                const svcMatch = (serviceItems || []).find(function(s) {
+                    const code = (s.code || '').toLowerCase();
+                    const sname = (s.name || '').toLowerCase();
+                    const label = code && sname ? (code + ' - ' + sname) : (code || sname);
+                    return code === term || sname === term || label.toLowerCase() === term;
+                });
+                if (svcMatch) {
+                    serviceItemId = svcMatch.id;
+                    name = svcMatch.name || raw;
+                } else {
+                    name = raw;
+                }
+            } else if (customNameInput && customNameInput.value.trim()) {
+                name = customNameInput.value.trim();
+            }
+
+            if (!name) return;
+
+            invoiceItems.push({
+                itemId: itemId || null,
+                name: name,
+                supplierId: supplierId,
+                employeeId: employeeId,
+                warehouseId: warehouseId,
+                price: price,
+                quantity: quantity,
+                custom: !itemId,
+                tva: tva,
+                serviceItemId: serviceItemId || null
+            });
+        });
+
+        if (!clientId || invoiceItems.length === 0) {
+            uiError('Please select a client and add at least one item.', document.getElementById('invoiceAClientId'));
+            return;
+        }
+
+        const total = parseFloat(document.getElementById('invoiceATotal').textContent) || 0;
+        let amountPaid = parseFloat(document.getElementById('invoiceAAmountPaid').value);
+        if (isNaN(amountPaid)) amountPaid = 0;
+        if (amountPaid < 0) amountPaid = 0;
+        if (amountPaid > total) amountPaid = total;
+        const remaining = total - amountPaid;
+        const paymentStatus = remaining <= 0 ? 'paid' : 'unpaid';
+        const paidAt = paymentStatus === 'paid' ? date : null;
+
+        let savedId = editingId;
+
+        // Invoice A does NOT affect stock.
+
+        let invoiceNumber = null;
+        if (editingId) {
+            const existing = invoices.find(function(i) { return i.id === editingId; });
+            invoiceNumber = existing && existing.invoiceNumber ? existing.invoiceNumber : null;
+        }
+        if (!invoiceNumber) {
+            invoiceNumber = getNextInvoiceANumber();
+            bumpInvoiceANumber(invoiceNumber);
+        }
+
+        const data = {
+            clientId: clientId,
+            carId: carId,
+            date: date,
+            fiscalReg: fiscalReg,
+            tvaRegNo: tvaRegNo,
+            tvaDefault: tvaDefault,
+            items: invoiceItems,
+            total: total,
+            amountPaid: amountPaid,
+            paymentStatus: paymentStatus,
+            paidAt: paidAt,
+            invoiceType: 'A',
+            invoiceNumber: invoiceNumber
+        };
+
+        if (editingId) {
+            const index = invoices.findIndex(function(i) { return i.id === editingId; });
+            invoices[index] = { ...invoices[index], ...data, id: editingId, invoiceNumber: invoiceNumber };
+        } else {
+            const id = Date.now();
+            savedId = id;
+            invoices.push({ ...data, id: id });
+        }
+
+        invoiceAPage = 1;
+        dbSetAll('invoices', invoices);
+        renderInvoiceA();
+        renderItems();
+        renderClients();
+        openInvoiceASavedModal(savedId);
+    }
+
     // ======= DELETE (UPDATED + CALLBACK SUPPORT) =======
 function deleteItem(type, id, onDone) {
-  if (!requireAdminAction()) return;
+  if (type === 'item') {
+    if (!requireItemAdminAction()) return;
+  } else {
+    if (!requireAdminAction()) return;
+  }
 
   uiConfirm('Are you sure you want to delete this ' + type + '?', () => {
 
@@ -3287,10 +5450,40 @@ renderClients();
 
       if (typeof onDone === 'function') onDone();
 
+    } else if (type === 'serviceItem') {
+      items = (items || []).filter(i => String(i.id) !== String(id));
+      dbSetAll('items', items);
+      syncServiceItemsFromItems();
+      renderServiceItems();
+
+      if (typeof onDone === 'function') onDone();
+
     } else if (type === 'employee') {
       employees = employees.filter(e => e.id !== id);
       dbSetAll('employees', employees);
       renderEmployees();
+
+      if (typeof onDone === 'function') onDone();
+
+    } else if (type === 'payroll') {
+      const target = (payrollPayments || []).find(p => String(p.id) === String(id));
+      if (target) {
+        const emp = (employees || []).find(function(e) { return String(e.id) === String(target.employeeId); });
+        if (emp) {
+          const arr = ensureEmployeePayrollArray(emp).filter(function(p) { return String(p.id) !== String(target.id); });
+          emp.payrollPayments = arr;
+          dbSetAll('employees', employees);
+        }
+      }
+      rebuildPayrollPaymentsFromEmployees();
+      renderPayrollPayments();
+
+      if (typeof onDone === 'function') onDone();
+
+    } else if (type === 'expense') {
+      expenses = expenses.filter(e => e.id !== id);
+      dbSetAll('expenses', expenses);
+      renderExpenses();
 
       if (typeof onDone === 'function') onDone();
 
@@ -3302,26 +5495,29 @@ renderClients();
         if (option === 0) return;
 
         if (option === 1) {
-          invoice.items.forEach(item => {
-            if (!item.itemId) return;
-            const idx = items.findIndex(i => i.id === item.itemId);
-            if (idx !== -1) {
-              adjustItemStock(
-                item.itemId,
-                item.warehouseId || getDefaultWarehouseId(),
-                +item.quantity
-              );
-            }
-          });
+          if (!isInvoiceA(invoice)) {
+            invoice.items.forEach(item => {
+              if (!item.itemId) return;
+              const idx = items.findIndex(i => i.id === item.itemId);
+              if (idx !== -1) {
+                adjustItemStock(
+                  item.itemId,
+                  item.warehouseId || getDefaultWarehouseId(),
+                  +item.quantity
+                );
+              }
+            });
 
-          // Persist stock updates after restocking
-          dbSetAll('items', items);
-          renderItems();
+            // Persist stock updates after restocking
+            dbSetAll('items', items);
+            renderItems();
+          }
         }
 
         invoices = invoices.filter(inv => inv.id !== id);
         dbSetAll('invoices', invoices);
         renderInvoices();
+        renderInvoiceA();
         renderClients();
 
         // ✅ callback AFTER actual delete + save
@@ -3350,69 +5546,132 @@ function deleteInvoiceFromClientView(invoiceId, clientId) {
         return `
             <html>
             <head>
-                <title>Invoice ${invoice.invoiceNumber}</title>
+                <title>Estimate ${invoice.invoiceNumber}</title>
                 <style>
-                    body { font-family: Arial, sans-serif; padding: 20px; }
-                    h1 { color: #2563eb; margin-top: 10px; }
-                    table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-                    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-                    th { background-color: #2563eb; color: white; }
-                    .total { font-weight: bold; font-size: 18px; text-align: right; margin-top: 20px; }
+                    :root {
+                        --ink: #1b2026;
+                        --muted: #6a7077;
+                        --line: #d9d3c9;
+                        --brand: #0f4c5c;
+                        --accent: #c97b3a;
+                        --success: #1a7f37;
+                        --danger: #b42318;
+                    }
+                    * { box-sizing: border-box; }
+                    body { font-family: "Trebuchet MS", "Verdana", sans-serif; color: var(--ink); padding: 26px; }
+                    .topbar { height: 6px; background: linear-gradient(90deg, var(--brand), var(--accent)); margin-bottom: 16px; }
+                    h1 { margin: 0; font-size: 22px; letter-spacing: 1px; text-transform: uppercase; }
+                    .title-row { display: flex; justify-content: space-between; align-items: center; margin: 10px 0 8px; }
+                    .badge { border: 1px solid var(--line); border-left: 5px solid var(--accent); padding: 6px 12px; font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; background: #faf6ef; }
+                    .badge.paid { border-left-color: var(--success); color: var(--success); }
+                    .badge.unpaid { border-left-color: var(--danger); color: var(--danger); }
+                    .doc-box { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 11px; background: #fbf7f0; }
+                    .doc-box .label { color: var(--muted); font-size: 10px; letter-spacing: 0.6px; text-transform: uppercase; }
+
+                    table { width: 100%; border-collapse: collapse; margin-top: 12px; border: 1px solid var(--line); }
+                    th { background-color: #f7f2ea; color: var(--muted); font-size: 11px; letter-spacing: 0.4px; padding: 8px; text-align: left; border-bottom: 1px solid var(--line); }
+                    td { padding: 8px; text-align: left; font-size: 12px; border-bottom: 1px solid var(--line); }
+                    tbody tr:nth-child(even) { background: #faf6ef; }
+                    .total { font-weight: 700; font-size: 14px; text-align: right; margin-top: 12px; border: 1px solid var(--line); padding: 10px; }
 
                     .header {
                         display: flex;
                         justify-content: space-between;
                         align-items: flex-start;
-                        margin-bottom: 10px;
+                        gap: 20px;
+                        border-bottom: 1px solid var(--line);
+                        padding-bottom: 10px;
+                        margin-bottom: 12px;
                     }
-                    .invoice-logo img {
-                        max-height: 80px;
-                    }
+                    .invoice-logo img { max-height: 70px; }
                     .invoice-header-info {
                         text-align: right;
-                        font-size: 14px;
+                        font-size: 11px;
                         line-height: 1.4;
+                        color: var(--muted);
                     }
+                    .meta-grid {
+                        display: grid;
+                        grid-template-columns: 1fr 1fr;
+                        gap: 10px 16px;
+                        font-size: 12px;
+                        background: #fbf7f0;
+                        border: 1px solid var(--line);
+                        border-radius: 10px;
+                        padding: 10px 12px;
+                    }
+                    .meta-grid .label { color: var(--muted); font-size: 10px; letter-spacing: 0.6px; text-transform: uppercase; }
+                    .footer { margin-top: 12px; font-size: 10px; color: var(--muted); display: flex; justify-content: space-between; }
                 </style>
             </head>
             <body>
+                <div class="topbar"></div>
                 <div class="header">
                     ${logoHtml}
                     <div class="invoice-header-info">
                         ${headerHtml}
                     </div>
                 </div>
-
-                <h1>INVOICE</h1>
-                <p><strong>Date:</strong> ${invoice.date}</p>
-                <p><strong>Client:</strong> ${client ? client.name : ''}</p>
-                <p><strong>Phone:</strong> ${client ? client.phone : ''}</p>
-                ${car ? `<p><strong>Vehicle:</strong> ${car.year} ${car.make} ${car.model} - ${car.plate}</p>` : ''}
+                <div class="title-row">
+                    <h1>Estimate</h1>
+                    <div class="badge ${f.status === 'paid' ? 'paid' : 'unpaid'}">${f.status === 'paid' ? 'PAID' : 'UNPAID'}</div>
+                </div>
+                <div class="meta-grid">
+                    <div>
+                        <div class="label">Invoice #</div>
+                        <div>${escapeHtml(invoice.invoiceNumber || '')}</div>
+                    </div>
+                    <div>
+                        <div class="label">Date</div>
+                        <div>${escapeHtml(invoice.date || '')}</div>
+                    </div>
+                    <div>
+                        <div class="label">Client</div>
+                        <div>${escapeHtml(client ? client.name : '')}</div>
+                    </div>
+                    <div>
+                        <div class="label">Phone</div>
+                        <div>${escapeHtml(client ? client.phone : '')}</div>
+                    </div>
+                    ${car ? `<div>
+                        <div class="label">Vehicle</div>
+                        <div>${escapeHtml(car.year + ' ' + car.make + ' ' + car.model + ' - ' + car.plate)}</div>
+                    </div>` : '<div></div>'}
+                    <div>
+                        <div class="label">Amount Paid</div>
+                        <div>${f.amountPaid.toFixed(2)}</div>
+                    </div>
+                </div>
                 <table>
-                    <tr>
-                        <th>Item</th>
-                        <th>Quantity</th>
-                        <th>Price</th>
-                        <th>Total</th>
-                    </tr>
-                    ${invoice.items.map(function(item) {
-                        const qty = Number(item.quantity) || 0;
-                        const price = Number(item.price) || 0;
-                        return `
-                            <tr>
-                                <td>${escapeHtml(item.name || '')}</td>
-                                <td>${qty}</td>
-                                <td>${price.toFixed(2)}</td>
-                                <td>${(qty * price).toFixed(2)}</td>
-                            </tr>
-                        `;
-                    }).join('')}
+                    <thead>
+                        <tr>
+                            <th>Item</th>
+                            <th>Quantity</th>
+                            <th>Price</th>
+                            <th>Total</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${invoice.items.map(function(item) {
+                            const qty = Number(item.quantity) || 0;
+                            const price = Number(item.price) || 0;
+                            return `
+                                <tr>
+                                    <td>${escapeHtml(item.name || '')}</td>
+                                    <td>${qty}</td>
+                                    <td>${price.toFixed(2)}</td>
+                                    <td>${(qty * price).toFixed(2)}</td>
+                                </tr>
+                            `;
+                        }).join('')}
+                    </tbody>
                 </table>
-                <div class="total">TOTAL: ${f.total.toFixed(2)}</div>
-                <p><strong>Amount Paid:</strong> ${f.amountPaid.toFixed(2)}</p>
-                <p><strong>Remaining:</strong> ${f.remaining.toFixed(2)}</p>
-                <p><strong>Status:</strong> ${f.status === 'paid' ? 'PAID' : 'UNPAID'}</p>
+                <div class="total">TOTAL: ${f.total.toFixed(2)} &nbsp; | &nbsp; Remaining: ${f.remaining.toFixed(2)}</div>
                 ${invoice.notes ? `<p><strong>Notes:</strong> ${escapeHtml(invoice.notes)}</p>` : ''}
+                <div class="footer">
+                    <div>Thank you for your business.</div>
+                    <div></div>
+                </div>
             </body>
             </html>
         `;
@@ -3427,34 +5686,45 @@ function deleteInvoiceFromClientView(invoiceId, clientId) {
                 <title>Invoice ${invoice.invoiceNumber}</title>
                 <style>
                     :root {
-                        --ink: #111111;
-                        --muted: #6b7280;
-                        --line: #e5e7eb;
-                        --accent: #111111;
+                        --ink: #1b2026;
+                        --muted: #6a7077;
+                        --line: #d9d3c9;
+                        --brand: #0f4c5c;
+                        --accent: #c97b3a;
+                        --success: #1a7f37;
+                        --danger: #b42318;
                     }
                     * { box-sizing: border-box; }
-                    body { font-family: "Segoe UI", Arial, sans-serif; color: var(--ink); padding: 24px; }
-                    .topbar { height: 10px; background: var(--accent); margin-bottom: 16px; }
-                    .header { display: flex; justify-content: space-between; gap: 20px; }
+                    body { font-family: "Trebuchet MS", "Verdana", sans-serif; color: var(--ink); padding: 26px; }
+                    .topbar { height: 8px; background: linear-gradient(90deg, var(--brand), var(--accent)); margin-bottom: 16px; }
+                    .header { display: flex; justify-content: space-between; gap: 20px; border-bottom: 1px solid var(--line); padding-bottom: 10px; margin-bottom: 12px; }
                     .brand { display: flex; gap: 12px; align-items: center; }
                     .brand .invoice-logo img { max-height: 64px; }
-                    .brand-title { font-size: 20px; font-weight: 700; letter-spacing: 0.3px; }
-                    .header-right { text-align: right; font-size: 12px; line-height: 1.4; color: var(--muted); }
-                    .title-row { display: flex; justify-content: space-between; align-items: center; margin: 20px 0 10px; }
-                    .title { font-size: 28px; font-weight: 800; letter-spacing: 1px; }
-                    .badge { border: 2px solid var(--accent); padding: 6px 12px; font-weight: 700; font-size: 12px; }
-                    .meta { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 20px; font-size: 13px; }
-                    .meta .label { color: var(--muted); }
-                    table { width: 100%; border-collapse: collapse; margin-top: 16px; }
-                    th { text-align: left; font-size: 12px; letter-spacing: 0.5px; color: var(--muted); border-bottom: 2px solid var(--ink); padding: 8px 6px; }
-                    td { border-bottom: 1px solid var(--line); padding: 8px 6px; font-size: 13px; }
+                    .brand-title { font-size: 20px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; }
+                    .header-right { text-align: right; font-size: 11px; line-height: 1.4; color: var(--muted); }
+                    .doc-box { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 11px; background: #fbf7f0; margin-top: 6px; }
+                    .doc-box .label { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.6px; }
+                    .doc-box { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 11px; background: #fbf7f0; margin-top: 6px; }
+                    .doc-box .label { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.6px; }
+                    .title-row { display: flex; justify-content: space-between; align-items: center; margin: 14px 0 6px; }
+                    .doc-title { font-size: 22px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; }
+                    .badge { border: 1px solid var(--line); border-left: 5px solid var(--accent); padding: 6px 12px; font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: 0.6px; background: #faf6ef; }
+                    .badge.paid { border-left-color: var(--success); color: var(--success); }
+                    .badge.unpaid { border-left-color: var(--danger); color: var(--danger); }
+                    .meta { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 18px; font-size: 12px; background: #fbf7f0; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+                    .meta .label { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.8px; }
+                    .meta div { font-weight: 600; }
+                    table { width: 100%; border-collapse: collapse; margin-top: 16px; border: 1px solid var(--line); }
+                    th { text-align: left; font-size: 11px; letter-spacing: 0.6px; color: var(--muted); background: #f7f2ea; padding: 8px 6px; border-bottom: 1px solid var(--line); }
+                    td { padding: 8px 6px; font-size: 12px; border-bottom: 1px solid var(--line); }
+                    tbody tr:nth-child(even) { background: #faf6ef; }
                     td.num { text-align: right; }
-                    .summary { display: grid; grid-template-columns: 1fr 280px; gap: 16px; margin-top: 16px; }
-                    .notes { color: var(--muted); font-size: 12px; }
-                    .totals { border: 2px solid var(--ink); padding: 12px; }
-                    .totals-row { display: flex; justify-content: space-between; margin: 6px 0; font-size: 13px; }
-                    .totals-row strong { font-size: 16px; }
-                    .footer { margin-top: 16px; font-size: 11px; color: var(--muted); display: flex; justify-content: space-between; }
+                    .summary { display: grid; grid-template-columns: 1fr 260px; gap: 16px; margin-top: 16px; }
+                    .notes { color: var(--muted); font-size: 11px; border: 1px dashed var(--line); padding: 8px; border-radius: 8px; min-height: 42px; }
+                    .totals { border: 2px solid var(--brand); padding: 10px 12px; background: #ffffff; }
+                    .totals-row { display: flex; justify-content: space-between; margin: 6px 0; font-size: 12px; }
+                    .totals-row strong { font-size: 14px; }
+                    .footer { margin-top: 12px; font-size: 10px; color: var(--muted); display: flex; justify-content: space-between; }
                 </style>
             </head>
             <body>
@@ -3466,17 +5736,21 @@ function deleteInvoiceFromClientView(invoiceId, clientId) {
                     </div>
                     <div class="header-right">
                         ${headerHtml}
+                        <div class="doc-box">
+                            <div><span class="label">Invoice #</span><br>${escapeHtml(invoice.invoiceNumber || '')}</div>
+                            <div style="margin-top:4px;"><span class="label">Date</span><br>${escapeHtml(invoice.date || '')}</div>
+                        </div>
                     </div>
                 </div>
 
                 <div class="title-row">
-                    <div class="title">INVOICE</div>
-                    <div class="badge">${statusText}</div>
+                    <div class="doc-title">ESTIMATE</div>
+                    <div class="badge ${f.status === 'paid' ? 'paid' : 'unpaid'}">${statusText}</div>
                 </div>
 
                 <div class="meta">
                     <div><span class="label">Date</span><br>${escapeHtml(invoice.date || '')}</div>
-                    <div><span class="label">Invoice #</span><br>${escapeHtml(invoice.invoiceNumber || '')}</div>
+                    <div><span class="label">Estimate #</span><br>${escapeHtml(invoice.invoiceNumber || '')}</div>
                     <div><span class="label">Client</span><br>${escapeHtml(client ? client.name : '')}</div>
                     <div><span class="label">Phone</span><br>${escapeHtml(client ? client.phone : '')}</div>
                     ${car ? `<div><span class="label">Vehicle</span><br>${escapeHtml(car.year + ' ' + car.make + ' ' + car.model + ' - ' + car.plate)}</div>` : '<div></div>'}
@@ -3528,6 +5802,136 @@ function deleteInvoiceFromClientView(invoiceId, clientId) {
         `;
     }
 
+    function buildInvoiceHtmlA(invoice, client, car, f, logoHtml, headerLines) {
+        const tvaReg = invoice.tvaRegNo || getInvoiceTvaRegNo();
+        const fiscalReg = invoice.fiscalReg || '';
+        let subtotal = 0;
+        let tvaTotal = 0;
+
+        const rows = (invoice.items || []).map(function(item) {
+            const qty = Number(item.quantity) || 0;
+            const price = Number(item.price) || 0;
+            const base = qty * price;
+            const tva = item.tva ? base * 0.11 : 0;
+            const total = base + tva;
+            subtotal += base;
+            tvaTotal += tva;
+            return `
+                <tr>
+                    <td>${escapeHtml(item.name || '')}</td>
+                    <td class="num">${price.toFixed(2)}</td>
+                    <td class="num">${qty}</td>
+                    <td class="num">${tva.toFixed(2)}</td>
+                    <td class="num">${total.toFixed(2)}</td>
+                </tr>
+            `;
+        }).join('');
+
+        const totalWithTva = subtotal + tvaTotal;
+        const brandTitle = headerLines.line1 ? escapeHtml(headerLines.line1) : '';
+        const headerLine2 = headerLines.line2 ? `<div>${escapeHtml(headerLines.line2)}</div>` : '';
+        const headerLine3 = headerLines.line3 ? `<div>${escapeHtml(headerLines.line3)}</div>` : '';
+        const tvaLine = tvaReg ? `<div>TVA Registration No: ${escapeHtml(tvaReg)}</div>` : '';
+
+        return `
+            <html>
+            <head>
+                <title>Estimate ${invoice.invoiceNumber}</title>
+                <style>
+                    :root { --ink:#1b2026; --muted:#6a7077; --line:#d9d3c9; --brand:#0f4c5c; --accent:#c97b3a; }
+                    * { box-sizing: border-box; }
+                    body { font-family: "Trebuchet MS", "Verdana", sans-serif; color: var(--ink); padding: 24px; }
+                    .topbar { height: 8px; background: linear-gradient(90deg, var(--brand), var(--accent)); margin-bottom: 14px; }
+                    .header { display:flex; justify-content: space-between; gap: 20px; border-bottom: 1px solid var(--line); padding-bottom: 10px; margin-bottom: 12px; }
+                    .brand { display:flex; gap: 12px; align-items: center; }
+                    .brand .invoice-logo img { max-height: 70px; }
+                    .brand-title { font-weight: 700; letter-spacing: 0.4px; text-transform: uppercase; }
+                    .header-right { text-align: right; font-size: 11px; line-height: 1.4; color: var(--muted); }
+                    .title { text-align:center; font-size: 20px; font-weight: 800; letter-spacing: 1px; margin: 12px 0; text-transform: uppercase; }
+                    .meta { display:flex; justify-content: space-between; gap: 20px; font-size: 12px; margin-bottom: 10px; background:#fbf7f0; border:1px solid var(--line); border-radius: 10px; padding: 8px 10px; }
+                    .meta .block { line-height: 1.5; }
+                    table { width:100%; border-collapse: collapse; margin-top: 10px; border:1px solid var(--line); }
+                    th { background:#f7f2ea; text-align:left; color: var(--muted); font-size: 11px; letter-spacing: 0.5px; padding: 7px; border-bottom:1px solid var(--line); }
+                    td { padding: 7px; font-size: 12px; border-bottom:1px solid var(--line); }
+                    tbody tr:nth-child(even) { background:#faf6ef; }
+                    td.num { text-align: right; }
+                    .summary { display:grid; grid-template-columns: 1fr 260px; gap: 16px; margin-top: 12px; }
+                    .totals { border: 2px solid var(--brand); padding: 10px; font-size: 12px; background: #ffffff; }
+                    .totals-row { display:flex; justify-content: space-between; margin: 5px 0; }
+                    .totals-row strong { font-size: 14px; }
+                    .footer { margin-top: 10px; font-size: 10px; color: var(--muted); display:flex; justify-content: space-between; }
+                </style>
+            </head>
+            <body>
+                <div class="topbar"></div>
+                <div class="header">
+                    <div class="brand">
+                        ${logoHtml}
+                        <div class="brand-title">${brandTitle}</div>
+                    </div>
+                    <div class="header-right">
+                        ${headerLine2}
+                        ${headerLine3}
+                        ${tvaLine}
+                        <div class="doc-box">
+                            <div><span class="label">Invoice #</span><br>${escapeHtml(invoice.invoiceNumber || '')}</div>
+                            <div style="margin-top:4px;"><span class="label">Date</span><br>${escapeHtml(invoice.date || '')}</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="title">Invoice A</div>
+
+                <div class="meta">
+                    <div class="block">
+                        <div><strong>To:</strong> ${escapeHtml(client ? client.name : '')}</div>
+                        <div>${escapeHtml(client ? client.phone : '')}</div>
+                    </div>
+                    <div class="block" style="text-align:right;">
+                        <div><strong>Invoice No:</strong> ${escapeHtml(invoice.invoiceNumber || '')}</div>
+                        <div><strong>Invoice Date:</strong> ${escapeHtml(invoice.date || '')}</div>
+                        <div><strong>Fiscal Reg:</strong> ${escapeHtml(fiscalReg)}</div>
+                    </div>
+                </div>
+
+                <div class="meta">
+                    <div class="block"><strong>Registration:</strong> ${escapeHtml(car ? (car.plate || '') : '')}</div>
+                    <div class="block" style="text-align:right;"><strong>Chassis No:</strong> ${escapeHtml(car ? (car.vin || '') : '')}</div>
+                </div>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Description</th>
+                            <th class="num">Price($)</th>
+                            <th class="num">Qty</th>
+                            <th class="num">TVA(11%)</th>
+                            <th class="num">Total($)</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${rows}
+                    </tbody>
+                </table>
+
+                <div class="summary">
+                    <div></div>
+                    <div class="totals">
+                        <div class="totals-row"><span>Subtotal</span><span>${subtotal.toFixed(2)}</span></div>
+                        <div class="totals-row"><span>Amount Paid</span><span>${f.amountPaid.toFixed(2)}</span></div>
+                        <div class="totals-row"><span>Remaining</span><span>${f.remaining.toFixed(2)}</span></div>
+                        <div class="totals-row"><strong>Total</strong><strong>${(totalWithTva || f.total).toFixed(2)}</strong></div>
+                    </div>
+                </div>
+                <div class="footer">
+                    <div>Thank you for your business.</div>
+                    <div>${escapeHtml(headerLines.line3 || '')}</div>
+                </div>
+            </body>
+            </html>
+        `;
+    }
+
     function printInvoice(id) {
         const invoice = invoices.find(function(i) { return i.id === id; });
         if (!invoice) return;
@@ -3564,6 +5968,33 @@ function deleteInvoiceFromClientView(invoiceId, clientId) {
         printWindow.print();
     }
 
+    function printInvoiceA(id) {
+        const invoice = invoices.find(function(i) { return i.id === id; });
+        if (!invoice) return;
+
+        const client = clients.find(function(c) { return c.id === invoice.clientId; });
+        const car = invoice.carId ? cars.find(function(c) { return c.id === invoice.carId; }) : null;
+        const f = getInvoiceFinancials(invoice);
+
+        let logoDataUrl = '';
+        try {
+            logoDataUrl = getLogoDataUrl();
+        } catch (e) {
+            logoDataUrl = '';
+        }
+        const logoHtml = logoDataUrl
+            ? `<div class="invoice-logo"><img src="${logoDataUrl}" alt="Logo"></div>`
+            : `<div class="invoice-logo"></div>`;
+
+        const headerLines = getInvoiceHeaderLines();
+        const html = buildInvoiceHtmlA(invoice, client, car, f, logoHtml, headerLines);
+
+        const printWindow = window.open('', '', 'width=900,height=700');
+        printWindow.document.write(html);
+        printWindow.document.close();
+        printWindow.print();
+    }
+
     // ======= CLIENT BALANCE =======
 
     function getClientBalance(clientId) {
@@ -3590,16 +6021,22 @@ function togglePaymentStatus(invoiceId) {
     // Get current financial state
     const f = getInvoiceFinancials(invoice);
 
+    const today = new Date().toISOString().split('T')[0];
     // Toggle paid / unpaid
     if (f.status === 'paid') {
         invoice.amountPaid = 0;
+        invoice.paidAt = null;
     } else {
         invoice.amountPaid = f.total;
+        invoice.paidAt = today;
     }
 
     // Recompute & store status
     const f2 = getInvoiceFinancials(invoice);
     invoice.paymentStatus = f2.status;
+    if (invoice.paymentStatus !== 'paid') {
+        invoice.paidAt = null;
+    }
 
     // Persist changes (single-row update to avoid full rewrite)
     try {
@@ -3614,18 +6051,35 @@ function togglePaymentStatus(invoiceId) {
 
     // Re-render UI
     renderInvoices();
+    renderInvoiceA();
     renderClients();
 }
 
     // ======= SHOW CLIENT INVOICES (FROM CLIENT TAB) =======
 
-    function showClientInvoices(clientId) {
+function showClientInvoices(clientId) {
+    const modal = document.getElementById('modal');
+    const title = document.getElementById('modalTitle');
+    const body = document.getElementById('modalBody');
+
+    const cachedClient = (clients || []).find(function(c) { return c.id === clientId; });
+    if (title) title.textContent = 'Invoices - ' + (cachedClient ? cachedClient.name : 'Client');
+    if (body) {
+        body.innerHTML = `
+            <p>Loading invoices...</p>
+            <div class="modal-footer">
+                <button class="btn" onclick="closeModal()">Close</button>
+            </div>
+        `;
+    }
+    if (modal) modal.classList.add('active');
+
+    const render = function() {
+        if (modal && !modal.classList.contains('active')) return;
         const client = clients.find(function(c) { return c.id === clientId; });
         const clientInvoices = invoices.filter(function(inv) { return inv.clientId === clientId; });
-
-        const modal = document.getElementById('modal');
-        const title = document.getElementById('modalTitle');
-        const body = document.getElementById('modalBody');
+        const standardInvoices = clientInvoices.filter(function(inv){ return !isInvoiceA(inv); });
+        const invoiceAList = clientInvoices.filter(function(inv){ return isInvoiceA(inv); });
 
         title.textContent = 'Invoices - ' + (client ? client.name : 'Client');
 
@@ -3636,12 +6090,17 @@ function togglePaymentStatus(invoiceId) {
                     <button class="btn" onclick="closeModal()">Close</button>
                 </div>
             `;
-        } else {
-            const rows = clientInvoices.map(function(inv) {
+            return;
+        }
+
+        function buildInvoiceRows(list, isA) {
+            return list.map(function(inv) {
                 const car = inv.carId ? cars.find(function(c) { return c.id === inv.carId; }) : null;
                 const f = getInvoiceFinancials(inv);
                 const statusClass = f.status === 'paid' ? 'status-paid' : 'status-unpaid';
                 const statusText = f.status === 'paid' ? '✓ PAID' : '⏳ UNPAID';
+                const printFn = isA ? 'printInvoiceA' : 'printInvoice';
+                const editFn = isA ? "openModal('invoiceA'," : "openModal('invoice',";
                 return `
                     <tr>
                         <td>${inv.invoiceNumber}</td>
@@ -3652,103 +6111,275 @@ function togglePaymentStatus(invoiceId) {
                         <td>${f.remaining.toFixed(2)}</td>
                         <td class="${statusClass}">${statusText}</td>
                         <td class="actions">
-                            <button class="btn btn-success btn-small" onclick="printInvoice(${inv.id})">Print</button>
-                            <button class="icon-btn edit" title="Edit" onclick="openModal(\'invoice\', ${inv.id})">✏️</button>
+                            <button class="btn btn-success btn-small" onclick="${printFn}(${inv.id})">Print</button>
+                            <button class="icon-btn edit" title="Edit" onclick="${editFn} ${inv.id})">✏️</button>
                             <button class="icon-btn delete" title="Delete" onclick="deleteInvoiceFromClientView(${inv.id}, ${clientId})">🗑️</button>
                         </td>
                     </tr>
                 `;
             }).join('');
-
-            body.innerHTML = `
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Invoice #</th>
-                            <th>Date</th>
-                            <th>Car</th>
-                            <th>Total</th>
-                            <th>Paid</th>
-                            <th>Remaining</th>
-                            <th>Status</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        ${rows}
-                    </tbody>
-                </table>
-                <div class="modal-footer">
-                    <button class="btn" onclick="closeModal()">Close</button>
-                </div>
-            `;
         }
 
-        modal.classList.add('active');
+        body.innerHTML = `
+            <h4 style="margin:8px 0;">Invoices</h4>
+            ${standardInvoices.length === 0 ? `<p>No standard invoices.</p>` : `
+            <div style="display:flex; justify-content:flex-end; margin:6px 0 10px;">
+                <button class="btn btn-success btn-small" onclick="printAllClientInvoices(${clientId}, 'standard')">Print All Invoices</button>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Invoice #</th>
+                        <th>Date</th>
+                        <th>Car</th>
+                        <th>Total</th>
+                        <th>Paid</th>
+                        <th>Remaining</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${buildInvoiceRows(standardInvoices, false)}
+                </tbody>
+            </table>
+            `}
+
+            <h4 style="margin:16px 0 8px;">Invoices A</h4>
+            ${invoiceAList.length === 0 ? `<p>No Invoice A records.</p>` : `
+            <div style="display:flex; justify-content:flex-end; margin:6px 0 10px;">
+                <button class="btn btn-success btn-small" onclick="printAllClientInvoices(${clientId}, 'A')">Print All Invoices A</button>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Invoice #</th>
+                        <th>Date</th>
+                        <th>Car</th>
+                        <th>Total</th>
+                        <th>Paid</th>
+                        <th>Remaining</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${buildInvoiceRows(invoiceAList, true)}
+                </tbody>
+            </table>
+            `}
+
+            <div class="modal-footer">
+                <button class="btn" onclick="closeModal()">Close</button>
+            </div>
+        `;
+    };
+
+    const refreshThenRender = function() {
+        try {
+            if (window.garageDB) {
+                clients = window.garageDB.getAll('clients') || clients || [];
+                cars = window.garageDB.getAll('cars') || cars || [];
+                invoices = window.garageDB.getAll('invoices') || invoices || [];
+            }
+        } catch (e) {}
+        render();
+    };
+
+    if (typeof window.__garageRefreshCache === 'function') {
+        window.__garageRefreshCache()
+            .then(refreshThenRender)
+            .catch(refreshThenRender);
+        return;
     }
+
+    refreshThenRender();
+}
+
+function printAllClientInvoices(clientId, type) {
+    const list = (invoices || []).filter(function(inv) {
+        if (inv.clientId !== clientId) return false;
+        if (type === 'A') return isInvoiceA(inv);
+        if (type === 'standard') return !isInvoiceA(inv);
+        return true;
+    });
+    if (!list.length) {
+        uiError('No invoices to print.');
+        return;
+    }
+
+    const sorted = list.slice().sort(function(a, b) {
+        const aDate = String(a.date || '');
+        const bDate = String(b.date || '');
+        if (aDate && bDate && aDate !== bDate) return aDate < bDate ? -1 : 1;
+        return (a.id || 0) - (b.id || 0);
+    });
+
+    function extractPrintParts(html) {
+        if (!html) return { styles: '', body: '' };
+        const styleMatch = html.match(/<style[^>]*>([\s\S]*?)<\/style>/i);
+        const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+        return {
+            styles: styleMatch ? styleMatch[1] : '',
+            body: bodyMatch ? bodyMatch[1] : html
+        };
+    }
+
+    const style = getInvoicePrintStyle();
+    const styles = new Set();
+    const pages = [];
+
+    sorted.forEach(function(inv) {
+        const client = clients.find(function(c) { return c.id === inv.clientId; });
+        const car = inv.carId ? cars.find(function(c) { return c.id === inv.carId; }) : null;
+        const f = getInvoiceFinancials(inv);
+
+        let logoDataUrl = '';
+        try { logoDataUrl = getLogoDataUrl(); } catch (e) { logoDataUrl = ''; }
+        const logoHtml = logoDataUrl
+            ? `<div class="invoice-logo"><img src="${logoDataUrl}" alt="Logo"></div>`
+            : `<div class="invoice-logo"></div>`;
+
+        const headerLines = getInvoiceHeaderLines();
+        const headerLine1 = headerLines.line1 ? `<div><strong>${escapeHtml(headerLines.line1)}</strong></div>` : '';
+        const headerLine2 = headerLines.line2 ? `<div>${escapeHtml(headerLines.line2)}</div>` : '';
+        const headerLine3 = headerLines.line3 ? `<div>${escapeHtml(headerLines.line3)}</div>` : '';
+        const headerHtml = headerLine1 + headerLine2 + headerLine3;
+
+        const html = isInvoiceA(inv)
+            ? buildInvoiceHtmlA(inv, client, car, f, logoHtml, headerLines)
+            : (style === 'classic'
+                ? buildInvoiceHtmlClassic(inv, client, car, f, logoHtml, headerHtml)
+                : buildInvoiceHtmlBold(inv, client, car, f, logoHtml, headerHtml, headerLines));
+
+        const parts = extractPrintParts(html);
+        if (parts.styles) styles.add(parts.styles);
+        pages.push(parts.body);
+    });
+
+    const combinedStyles = Array.from(styles).join('\n');
+    const pagesHtml = pages.map(function(body, idx) {
+        const breakStyle = (idx === pages.length - 1) ? '' : 'style="page-break-after: always;"';
+        return `<div class="print-page" ${breakStyle}>${body}</div>`;
+    }).join('');
+
+    const combinedHtml = `
+        <html>
+        <head>
+            <title>Invoices - ${clientId}</title>
+            <style>
+                .print-page { page-break-after: always; }
+                .print-page:last-child { page-break-after: auto; }
+            </style>
+            <style>${combinedStyles}</style>
+        </head>
+        <body>
+            ${pagesHtml}
+        </body>
+        </html>
+    `;
+
+    const printWindow = window.open('', '', 'width=900,height=700');
+    printWindow.document.write(combinedHtml);
+    printWindow.document.close();
+    printWindow.print();
+}
 
     // ======= SHOW CLIENT CARS (FROM CLIENT TAB) =======
 
     function showClientCars(clientId) {
-        const client = clients.find(function(c) { return c.id === clientId; });
-        const clientCars = cars.filter(function(car) { return car.clientId === clientId; });
-
         const modal = document.getElementById('modal');
         const title = document.getElementById('modalTitle');
         const body = document.getElementById('modalBody');
 
-        title.textContent = 'Cars - ' + (client ? client.name : 'Client');
-
-        if (clientCars.length === 0) {
+        const cachedClient = (clients || []).find(function(c) { return c.id === clientId; });
+        if (title) title.textContent = 'Cars - ' + (cachedClient ? cachedClient.name : 'Client');
+        if (body) {
             body.innerHTML = `
-                <p>This client has no cars registered.</p>
+                <p>Loading cars...</p>
                 <div class="modal-footer">
-                    <button class="btn btn-primary" data-admin-only="1" onclick="addCarForClient(${clientId})">+ Add Car</button>
-                    <button class="btn" onclick="closeModal()">Close</button>
-                </div>
-            `;
-        } else {
-            const rows = clientCars.map(function(car) {
-                return `
-                    <tr>
-                        <td>${car.make}</td>
-                        <td>${car.model}</td>
-                        <td>${car.year}</td>
-                        <td>${car.plate}</td>
-                        <td>${car.vin || ''}</td>
-                        <td class="actions">
-                            <button class="btn btn-success btn-small" onclick="quickInvoiceForCar(${car.id})">Invoice</button>
-                            <button class="icon-btn edit" title="Edit" onclick="openModal(\'car\', ${car.id})">✏️</button>
-                            <button class="icon-btn delete" title="Delete" onclick="deleteItem(\'car\', ${car.id})">🗑️</button>
-                        </td>
-                    </tr>
-                `;
-            }).join('');
-
-            body.innerHTML = `
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Make</th>
-                            <th>Model</th>
-                            <th>Year</th>
-                            <th>Plate</th>
-                            <th>VIN</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        ${rows}
-                    </tbody>
-                </table>
-                <div class="modal-footer">
-                    <button class="btn btn-primary" data-admin-only="1" onclick="addCarForClient(${clientId})">+ Add Car</button>
                     <button class="btn" onclick="closeModal()">Close</button>
                 </div>
             `;
         }
+        if (modal) modal.classList.add('active');
 
-        modal.classList.add('active');
+        const render = function() {
+            if (modal && !modal.classList.contains('active')) return;
+            const client = clients.find(function(c) { return c.id === clientId; });
+            const clientCars = cars.filter(function(car) { return car.clientId === clientId; });
+
+            title.textContent = 'Cars - ' + (client ? client.name : 'Client');
+
+            if (clientCars.length === 0) {
+                body.innerHTML = `
+                    <p>This client has no cars registered.</p>
+                    <div class="modal-footer">
+                        <button class="btn btn-primary" data-admin-only="1" onclick="addCarForClient(${clientId})">+ Add Car</button>
+                        <button class="btn" onclick="closeModal()">Close</button>
+                    </div>
+                `;
+            } else {
+                const rows = clientCars.map(function(car) {
+                    return `
+                        <tr>
+                            <td>${car.make}</td>
+                            <td>${car.model}</td>
+                            <td>${car.year}</td>
+                            <td>${car.plate}</td>
+                            <td>${car.vin || ''}</td>
+                            <td class="actions">
+                                <button class="btn btn-success btn-small" onclick="quickInvoiceForCar(${car.id})">Invoice</button>
+                                <button class="icon-btn edit" title="Edit" onclick="openModal(\'car\', ${car.id})">✏️</button>
+                                <button class="icon-btn delete" title="Delete" onclick="deleteItem(\'car\', ${car.id})">🗑️</button>
+                            </td>
+                        </tr>
+                    `;
+                }).join('');
+
+                body.innerHTML = `
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Make</th>
+                                <th>Model</th>
+                                <th>Year</th>
+                                <th>Plate</th>
+                                <th>VIN</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${rows}
+                        </tbody>
+                    </table>
+                    <div class="modal-footer">
+                        <button class="btn btn-primary" data-admin-only="1" onclick="addCarForClient(${clientId})">+ Add Car</button>
+                        <button class="btn" onclick="closeModal()">Close</button>
+                    </div>
+                `;
+            }
+
+        };
+
+        const refreshThenRender = function() {
+            try {
+                if (window.garageDB) {
+                    clients = window.garageDB.getAll('clients') || clients || [];
+                    cars = window.garageDB.getAll('cars') || cars || [];
+                }
+            } catch (e) {}
+            render();
+        };
+
+        if (typeof window.__garageRefreshCache === 'function') {
+            window.__garageRefreshCache()
+                .then(refreshThenRender)
+                .catch(refreshThenRender);
+            return;
+        }
+
+        refreshThenRender();
     }
 
     // ======= RENDER FUNCTIONS =======
@@ -3760,6 +6391,11 @@ function renderClients() {
             clients = window.garageDB.getAll('clients') || clients || [];
         }
     } catch (e) {}
+    try {
+        if (window.garageDB) {
+            cars = window.garageDB.getAll('cars') || cars || [];
+        }
+    } catch (e) {}
     try { rebuildClientIndex(); } catch (e) {}
     const tbody = document.querySelector('#clientsTable tbody');
 
@@ -3767,6 +6403,7 @@ function renderClients() {
         // ✅ also searches in the client's cars: plate / VIN / chassis / make / model / year
         // Make sure car index is fresh (fast enough and avoids missing newly added cars)
         try { rebuildClientCarsSearchIndex(); } catch(e) {}
+        try { rebuildClientCarsLabelMap(); } catch(e) {}
 
         const filtered = (clients || []).filter(function(c) {
             if (!clientSearchTerm) return true;
@@ -3777,21 +6414,33 @@ function renderClients() {
                    phone.includes(clientSearchTerm) ||
                    (carBlob && carBlob.includes(clientSearchTerm));
         });
+        const sorted = filtered.slice().sort(function(a, b) {
+            const aKey = Number((a && (a.createdAt ?? a.updatedAt ?? a.id)) || 0);
+            const bKey = Number((b && (b.createdAt ?? b.updatedAt ?? b.id)) || 0);
+            if (!Number.isFinite(aKey) && !Number.isFinite(bKey)) return 0;
+            if (!Number.isFinite(aKey)) return 1;
+            if (!Number.isFinite(bKey)) return -1;
+            return bKey - aKey;
+        });
 
         // pagination
-        const total = filtered.length;
+        const total = sorted.length;
         const totalPages = Math.max(1, Math.ceil(total / clientPageSize));
         if (clientPage > totalPages) clientPage = totalPages;
 
         const startIdx = (clientPage - 1) * clientPageSize;
-        const pageRows = filtered.slice(startIdx, startIdx + clientPageSize);
+        const pageRows = sorted.slice(startIdx, startIdx + clientPageSize);
 
         tbody.innerHTML = pageRows.map(function(c) {
             const balance = getClientBalance(c.id);
             const balanceClass = balance > 0 ? 'balance-negative' : 'balance-positive';
+            const carLabel = getClientCarsLabel(c.id);
+            const safeName = _esc(c.name || '');
+            const tooltip = carLabel ? _esc((c.name || '') + ': ' + carLabel) : '';
+            const nameHtml = tooltip ? `<span class="client-name" title="${tooltip}">${safeName}</span>` : safeName;
             return `
                 <tr>
-                    <td>${c.name}</td>
+                    <td>${nameHtml}</td>
                     <td>${c.phone}</td>
                     <td>${c.email || ''}</td>
                     <td>${c.address || ''}</td>
@@ -3855,13 +6504,22 @@ function renderClients() {
                    clientName.includes(carSearchTerm);
         });
 
+        const sorted = filtered.slice().sort(function(a, b) {
+            const aKey = Number((a && (a.createdAt ?? a.updatedAt ?? a.id)) || 0);
+            const bKey = Number((b && (b.createdAt ?? b.updatedAt ?? b.id)) || 0);
+            if (!Number.isFinite(aKey) && !Number.isFinite(bKey)) return 0;
+            if (!Number.isFinite(aKey)) return 1;
+            if (!Number.isFinite(bKey)) return -1;
+            return bKey - aKey;
+        });
+
         // pagination
-        const total = filtered.length;
+        const total = sorted.length;
         const totalPages = Math.max(1, Math.ceil(total / carPageSize));
         if (carPage > totalPages) carPage = totalPages;
 
         const startIdx = (carPage - 1) * carPageSize;
-        const pageRows = filtered.slice(startIdx, startIdx + carPageSize);
+        const pageRows = sorted.slice(startIdx, startIdx + carPageSize);
 
         tbody.innerHTML = pageRows.map(function(c) {
             const client = clientById.get(c.clientId);
@@ -3934,6 +6592,14 @@ function formatMoney(value) {
     });
 }
 
+function formatLbp(value) {
+    const num = Number(value) || 0;
+    return num.toLocaleString('en-US', {
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 0
+    });
+}
+
 function toNum(v) {
     if (v === null || v === undefined || v === '') return 0;
     const n = Number(v);
@@ -3965,9 +6631,9 @@ function renderItems() {
         return x.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
       };
 
-  const _hasPerm = (typeof hasPerm === 'function')
-    ? hasPerm
-    : function(){ return true; };
+  const _canItemsAdmin = (typeof hasItemAdminAccess === 'function')
+    ? hasItemAdminAccess
+    : (typeof hasPerm === 'function' ? function(){ return hasPerm("*"); } : function(){ return true; });
 
   const _safeInt = (typeof safeInt === 'function')
     ? safeInt
@@ -3998,8 +6664,9 @@ function renderItems() {
   }
 
   // ---- filter (search) ----
-const term = String(itemSearchTerm || '');
+  const term = String(itemSearchTerm || '');
   const filtered = (items || []).filter(function(i) {
+    if (isServiceItem(i)) return false;
     if (!term) return true;
     const name = (i.name || '').toLowerCase();
     const part = (i.partNumber || '').toLowerCase();
@@ -4064,7 +6731,7 @@ const term = String(itemSearchTerm || '');
     const lowCell = minStock ? `${isLow ? '🚩 ' : ''}${minStock}` : '';
 
     // cost tooltip on part number (admin only)
-    const partTitle = _hasPerm("*") ? `title="${escAttr(cost)}"` : '';
+    const partTitle = _canItemsAdmin() ? `title="${escAttr(cost)}"` : '';
 
     return `
       <tr class="${lowStockClass}">
@@ -4072,14 +6739,14 @@ const term = String(itemSearchTerm || '');
         <td ${partTitle}>${i.partNumber || ''}</td>
         <td>${i.location || ''}</td>
         <td>${_formatMoney(selling)}</td>
-        <td>${_hasPerm("*") ? _formatMoney(cost) : ''}</td>
+        <td>${_canItemsAdmin() ? _formatMoney(cost) : ''}</td>
         <td ${qtyTitle}>${qty}</td>
         <td>${lowCell}</td>
         <td>${photoTd}</td>
         <td>${i.description || ''}</td>
         <td class="actions">
-          ${_hasPerm("*") ? `<button class="icon-btn edit" title="Edit" onclick="openModal(\'item\', ${i.id})">✏️</button>` : ``}
-          ${_hasPerm("*") ? `<button class="icon-btn delete" title="Delete" onclick="deleteItem(\'item\', ${i.id})">🗑️</button>` : ``}
+          ${_canItemsAdmin() ? `<button class="icon-btn edit" title="Edit" onclick="openModal(\'item\', ${i.id})">✏️</button>` : ``}
+          ${_canItemsAdmin() ? `<button class="icon-btn delete" title="Delete" onclick="deleteItem(\'item\', ${i.id})">🗑️</button>` : ``}
         </td>
       </tr>
     `;
@@ -4103,6 +6770,250 @@ const term = String(itemSearchTerm || '');
   if (sizeSel && String(sizeSel.value) !== String(pageSize)) sizeSel.value = String(pageSize);
 }
 
+function renderServiceItems() {
+  try {
+    refreshServiceItemsFromDb();
+  } catch (e) {}
+
+  const tbody = document.querySelector('#serviceItemsTable tbody');
+  if (!tbody) return;
+
+  // Ensure pager exists even if HTML wasn't updated
+  let pager = document.getElementById('serviceItemsPager');
+  if (!pager) {
+    const table = document.getElementById('serviceItemsTable');
+    if (table && table.parentElement) {
+      pager = document.createElement('div');
+      pager.id = 'serviceItemsPager';
+      pager.className = 'pager';
+      pager.style.cssText = 'display:flex; align-items:center; gap:8px; margin-top:10px; flex-wrap:wrap;';
+      pager.innerHTML = `
+        <button id="serviceItemsPrevBtn" class="btn btn-small" onclick="servicePrevPage()">â—€ Prev</button>
+        <span id="serviceItemsPageInfo" style="font-weight:600;">Page 1</span>
+        <button id="serviceItemsNextBtn" class="btn btn-small" onclick="serviceNextPage()">Next â–¶</button>
+        <span style="margin-left:12px; opacity:0.8;" id="serviceItemsCountInfo"></span>
+        <span style="margin-left:12px;">Per page:</span>
+        <select id="serviceItemsPageSize" class="btn btn-small" onchange="setServicePageSize(this.value)">
+          <option value="10" selected>10</option>
+          <option value="25">25</option>
+          <option value="50">50</option>
+          <option value="100">100</option>
+        </select>
+      `;
+      table.insertAdjacentElement('afterend', pager);
+    }
+  }
+
+  const term = String(serviceItemSearchTerm || '').toLowerCase().trim();
+  const filtered = (serviceItems || []).filter(function(s) {
+    if (!term) return true;
+    const name = (s.name || '').toLowerCase();
+    const code = (s.code || '').toLowerCase();
+    return name.includes(term) || code.includes(term);
+  });
+
+  const sorted = filtered.slice().sort(function(a, b) {
+    return String(a.name || '').localeCompare(String(b.name || ''));
+  });
+
+  const total = sorted.length;
+  const pageSize = Math.max(1, parseInt(servicePageSize, 10) || 10);
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  if (servicePage > totalPages) servicePage = totalPages;
+  if (servicePage < 1) servicePage = 1;
+  const startIdx = (servicePage - 1) * pageSize;
+  const paged = sorted.slice(startIdx, startIdx + pageSize);
+
+  const canEdit = (typeof hasItemAdminAccess === 'function') ? hasItemAdminAccess() : true;
+
+  tbody.innerHTML = paged.map(function(s) {
+    return `
+      <tr>
+        <td>${s.code || ''}</td>
+        <td>${s.name || ''}</td>
+        <td class="actions">
+          ${canEdit ? `<button class="icon-btn edit" title="Edit" onclick="openModal('serviceItem', ${s.id})">✏️</button>` : ``}
+          ${canEdit ? `<button class="icon-btn delete" title="Delete" onclick="deleteItem('serviceItem', ${s.id})">🗑️</button>` : ``}
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  const pageInfo = document.getElementById('serviceItemsPageInfo');
+  const countInfo = document.getElementById('serviceItemsCountInfo');
+  const prevBtn = document.getElementById('serviceItemsPrevBtn');
+  const nextBtn = document.getElementById('serviceItemsNextBtn');
+  const sizeSel = document.getElementById('serviceItemsPageSize');
+
+  if (pageInfo) pageInfo.textContent = `Page ${servicePage} / ${totalPages}`;
+  if (countInfo) {
+    const from = total === 0 ? 0 : (startIdx + 1);
+    const to = Math.min(startIdx + pageSize, total);
+    countInfo.textContent = `Showing ${from}-${to} of ${total}`;
+  }
+  if (prevBtn) prevBtn.disabled = (servicePage <= 1);
+  if (nextBtn) nextBtn.disabled = (servicePage >= totalPages);
+  if (sizeSel && String(sizeSel.value) !== String(pageSize)) sizeSel.value = String(pageSize);
+}
+
+function servicePrevPage() {
+  if (servicePage > 1) {
+    servicePage -= 1;
+    renderServiceItems();
+  }
+}
+
+function serviceNextPage() {
+  servicePage += 1;
+  renderServiceItems();
+}
+
+function setServicePageSize(val) {
+  const next = parseInt(val, 10);
+  servicePageSize = Number.isFinite(next) && next > 0 ? next : 10;
+  servicePage = 1;
+  renderServiceItems();
+}
+
+
+// ======= SERVICE ITEM SEARCH (Invoice rows) =======
+function onServiceSearchBlur(inputEl) {
+    const picker = inputEl ? inputEl.closest('.invoice-service-picker, .invoice-a-service-picker') : null;
+    if (!picker) return;
+    const dropdown = picker.querySelector('.service-dropdown');
+    if (!dropdown) return;
+    setTimeout(function() {
+        dropdown.style.display = 'none';
+    }, 120);
+}
+
+function onServiceOptionMouseDown(optionEl) {
+    const picker = optionEl ? optionEl.closest('.invoice-service-picker, .invoice-a-service-picker') : null;
+    if (!picker) return;
+    const id = optionEl.getAttribute('data-id') || '';
+    const label = optionEl.getAttribute('data-label') || optionEl.textContent || '';
+
+    const input = picker.querySelector('.invoice-service-search, .invoice-a-service-search');
+    const hidden = picker.querySelector('.invoice-service-id, .invoice-a-service-id');
+    if (hidden) hidden.value = id;
+    if (input) {
+        input.value = label;
+        input.setAttribute('data-service-name', label);
+    }
+
+    const dropdown = picker.querySelector('.service-dropdown');
+    if (dropdown) dropdown.style.display = 'none';
+}
+
+function onRowServiceItemSearch(inputEl, skipRefresh) {
+    if (!skipRefresh) {
+        refreshServiceItemsFromServer().then(function() {
+            if (document.body.contains(inputEl)) onRowServiceItemSearch(inputEl, true);
+        });
+        return;
+    }
+    refreshServiceItemsFromDb();
+    const term = (inputEl.value || '').toLowerCase().trim();
+    const picker = inputEl.closest('.invoice-service-picker');
+    const dropdown = picker ? picker.querySelector('.service-dropdown') : null;
+    if (!dropdown) return;
+
+    const hidden = picker.querySelector('.invoice-service-id');
+    const prevLabel = inputEl.getAttribute('data-service-name') || '';
+    if (hidden) {
+        if (prevLabel && prevLabel !== inputEl.value) {
+            hidden.value = '';
+            inputEl.setAttribute('data-service-name', '');
+        } else if (!prevLabel && hidden.value && inputEl.value.trim() === '') {
+            hidden.value = '';
+        }
+    }
+
+    if (!term) {
+        dropdown.style.display = 'none';
+        return;
+    }
+
+    const currentVal = hidden ? String(hidden.value || '') : '';
+
+    let filtered = (serviceItems || []).filter(function(s) {
+        const name = (s.name || '').toLowerCase();
+        const code = (s.code || '').toLowerCase();
+        return name.includes(term) || code.includes(term);
+    });
+
+    if (currentVal && !filtered.some(function(s) { return String(s.id) === String(currentVal); })) {
+        const selected = (serviceItems || []).find(function(s) { return String(s.id) === String(currentVal); });
+        if (selected) filtered = [selected].concat(filtered);
+    }
+
+    filtered = filtered.slice(0, 30);
+
+    dropdown.innerHTML = filtered.map(function(s) {
+        const code = s.code || '';
+        const name = s.name || '';
+        const label = code && name ? (code + ' - ' + name) : (code || name);
+        const safeLabel = _esc(label);
+        return '<div class="service-option" data-id="' + _esc(s.id) + '" data-label="' + safeLabel + '" onmousedown="onServiceOptionMouseDown(this)">' + safeLabel + '</div>';
+    }).join('');
+
+    dropdown.style.display = filtered.length ? 'block' : 'none';
+}
+
+function onRowServiceItemSearchA(inputEl, skipRefresh) {
+    if (!skipRefresh) {
+        refreshServiceItemsFromServer().then(function() {
+            if (document.body.contains(inputEl)) onRowServiceItemSearchA(inputEl, true);
+        });
+        return;
+    }
+    refreshServiceItemsFromDb();
+    const term = (inputEl.value || '').toLowerCase().trim();
+    const picker = inputEl.closest('.invoice-a-service-picker');
+    const dropdown = picker ? picker.querySelector('.service-dropdown') : null;
+    if (!dropdown) return;
+
+    const hidden = picker.querySelector('.invoice-a-service-id');
+    const prevLabel = inputEl.getAttribute('data-service-name') || '';
+    if (hidden) {
+        if (prevLabel && prevLabel !== inputEl.value) {
+            hidden.value = '';
+            inputEl.setAttribute('data-service-name', '');
+        } else if (!prevLabel && hidden.value && inputEl.value.trim() === '') {
+            hidden.value = '';
+        }
+    }
+
+    if (!term) {
+        dropdown.style.display = 'none';
+        return;
+    }
+
+    const currentVal = hidden ? String(hidden.value || '') : '';
+
+    let filtered = (serviceItems || []).filter(function(s) {
+        const name = (s.name || '').toLowerCase();
+        const code = (s.code || '').toLowerCase();
+        return name.includes(term) || code.includes(term);
+    });
+
+    if (currentVal && !filtered.some(function(s) { return String(s.id) === String(currentVal); })) {
+        const selected = (serviceItems || []).find(function(s) { return String(s.id) === String(currentVal); });
+        if (selected) filtered = [selected].concat(filtered);
+    }
+
+    filtered = filtered.slice(0, 30);
+
+    dropdown.innerHTML = filtered.map(function(s) {
+        const code = s.code || '';
+        const name = s.name || '';
+        const label = code && name ? (code + ' - ' + name) : (code || name);
+        const safeLabel = _esc(label);
+        return '<div class="service-option" data-id="' + _esc(s.id) + '" data-label="' + safeLabel + '" onmousedown="onServiceOptionMouseDown(this)">' + safeLabel + '</div>';
+    }).join('');
+
+    dropdown.style.display = filtered.length ? 'block' : 'none';
+}
 
 // ======= IMPORT ITEMS FROM EXCEL (XLSX/CSV) =======
 
@@ -4133,6 +7044,8 @@ if (!requireImportExcel()) return;
                     uiError('No rows found in the first sheet.');
                     return;
                 }
+                // Ensure warehouses exist before applying quantities
+                ensureWarehouses();
 
                 function normPart(p) {
   return String(p || "").trim().toLowerCase();
@@ -4165,6 +7078,7 @@ let importedCount = 0;
 let mergedCount = 0;
 let skippedCount = 0;
 let skippedDetails = [];
+let importedTags = new Set();
 
 rows.forEach(function (row, idxRow) {
   const rowNum = idxRow + 2; // +2 because row 1 is headers in Excel
@@ -4177,14 +7091,33 @@ rows.forEach(function (row, idxRow) {
   const rawBarcode = getCell(row, rowLower, ['Barcode', 'BARCODE', 'barcode']);
   const barcode = String(rawBarcode || '').trim();
 
+  const rawQtyMain = getCell(row, rowLower, [
+    'Main Qty', 'Main Quantity', 'Main', 'Main Stock', 'MainStock', 'Qty Main', 'Quantity Main'
+  ]);
+  const rawQtySaad = getCell(row, rowLower, [
+    'Saadeyat Qty', 'Saadeyat Quantity', 'Saadeyat', 'Saadeyat Stock', 'SaadeyatStock', 'Qty Saadeyat', 'Quantity Saadeyat'
+  ]);
   const rawQty = getCell(row, rowLower, ['Quantity', 'Qty']);
 
-  const quantityToAdd = parseInt(rawQty) || 0;
+  const hasMain = rawQtyMain !== undefined && rawQtyMain !== '';
+  const hasSaad = rawQtySaad !== undefined && rawQtySaad !== '';
+
+  let quantityMain = hasMain ? parseInt(rawQtyMain) : NaN;
+  let quantitySaad = hasSaad ? parseInt(rawQtySaad) : NaN;
+
+  // Backwards compatibility: if only generic Quantity is provided, treat it as Saadeyat stock
+  if (!hasMain && !hasSaad) {
+    quantityMain = 0;
+    quantitySaad = parseInt(rawQty) || 0;
+  } else {
+    if (isNaN(quantityMain)) quantityMain = 0;
+    if (isNaN(quantitySaad)) quantitySaad = 0;
+  }
 
   // 🚫 Block negative quantities (imports should only ADD stock)
-  if (quantityToAdd < 0) {
+  if (quantityMain < 0 || quantitySaad < 0) {
     skippedCount++;
-    skippedDetails.push(`Row ${rowNum}: negative quantity (${quantityToAdd}) for part number "${partNumber || ''}"`);
+    skippedDetails.push(`Row ${rowNum}: negative quantity (main=${quantityMain}, saadeyat=${quantitySaad}) for part number "${partNumber || ''}"`);
     return;
   }
 
@@ -4195,13 +7128,29 @@ rows.forEach(function (row, idxRow) {
     return;
   }
 
-  // ✅ if match => ONLY add quantity, keep everything else unchanged
+  // ✅ if match => ONLY add quantities, keep everything else unchanged
   const idx = findItemIndexByPartNumber(partNumber);
   if (idx !== -1) {
-    // Add imported qty to DEFAULT warehouse (first one)
-    const wid = getSaadeyatWarehouseId();
+    const mainWid = getMainWarehouseId();
+    const saadWid = getSaadeyatWarehouseId();
     ensureItemQuantities(items[idx]);
-    adjustItemStock(items[idx].id, wid, quantityToAdd);
+    if (quantityMain) adjustItemStock(items[idx].id, mainWid, quantityMain);
+    if (quantitySaad) adjustItemStock(items[idx].id, saadWid, quantitySaad);
+    if (tags && tags.length) {
+      ensureItemTags(items[idx]);
+      const existingTags = Array.isArray(items[idx].tags) ? items[idx].tags : [];
+      const mergedTags = [];
+      const seenTags = new Set();
+      existingTags.concat(tags).forEach(function(t) {
+        const val = String(t || '').trim();
+        if (!val) return;
+        const key = val.toLowerCase();
+        if (seenTags.has(key)) return;
+        seenTags.add(key);
+        mergedTags.push(val);
+      });
+      items[idx].tags = mergedTags;
+    }
     mergedCount++;
     return;
   }
@@ -4241,7 +7190,15 @@ rows.forEach(function (row, idxRow) {
 
   const description = String(getCell(row, rowLower, ['Description', 'Notes']) || '').trim();
 
-  items.push({
+  const rawTags = getCell(row, rowLower, ['Tags', 'Tag', 'Item Tags', 'Item Tag', 'ItemTags']);
+  const tags = normalizeTagsInput(rawTags);
+  if (tags && tags.length) {
+    tags.forEach(function(t) { importedTags.add(t); });
+  }
+
+  const mainWid = getMainWarehouseId();
+  const saadWid = getSaadeyatWarehouseId();
+  const newItem = {
     id: Date.now() + Math.floor(Math.random() * 1000000),
     name,
     partNumber,
@@ -4250,15 +7207,25 @@ rows.forEach(function (row, idxRow) {
     sellingPrice,
     costPrice,
     price: sellingPrice,
-    quantities: { [String(getSaadeyatWarehouseId())]: quantityToAdd },
-    quantity: quantityToAdd,              // ✅ cached total
+    quantities: { [String(mainWid)]: quantityMain, [String(saadWid)]: quantitySaad },
+    quantity: (quantityMain + quantitySaad),              // ✅ cached total
     lowStockThreshold,
     photoUrl,
-    description
-  });
+    description,
+    tags: tags || []
+  };
+  ensureItemQuantities(newItem);
+  items.push(newItem);
 
   importedCount++;
 });
+
+                if (importedTags && importedTags.size > 0) {
+                    try {
+                        const mergedTags = getFixedTags().concat(Array.from(importedTags));
+                        setFixedTags(mergedTags);
+                    } catch (e) {}
+                }
 
                 if ((importedCount + mergedCount) === 0) {
                     uiError('No valid rows imported. Each row must have a Part Number, and new items must also have Name and Price.');
@@ -4324,18 +7291,22 @@ rows.forEach(function (row, idxRow) {
         }).join('');
     }
 
-    function renderEmployees() {
+function renderEmployees() {
   // ✅ Always read latest from DB cache (prevents empty lists if init order changes)
   try { if (window.garageDB) { employees = window.garageDB.getAll('employees') || employees || []; } } catch(e) {}
 
         const tbody = document.querySelector('#employeesTable tbody');
         tbody.innerHTML = (employees || []).slice(0, MAX_ROWS).map(function(e) {
+            const weeklyUsd = Number(e.weeklySalaryUsd) || 0;
+            const weeklyLbp = Number(e.weeklySalaryLbp) || 0;
             return `
                 <tr>
                     <td>${e.name}</td>
                     <td>${e.phone || ''}</td>
                     <td>${e.email || ''}</td>
                     <td>${e.role || ''}</td>
+                    <td>${weeklyUsd.toFixed(2)}</td>
+                    <td>${formatLbp(weeklyLbp)}</td>
                     <td>${e.notes || ''}</td>
                     <td class="actions">
                         ${hasPerm("*") ? `<button class="icon-btn edit" title="Edit" onclick="openModal(\'employee\', ${e.id})">✏️</button>` : ``}
@@ -4344,6 +7315,156 @@ rows.forEach(function (row, idxRow) {
                 </tr>
             `;
         }).join('');
+
+        const totalsEl = document.getElementById('employeesTotals');
+        if (totalsEl) {
+            let totalUsd = 0;
+            let totalLbp = 0;
+            (employees || []).forEach(function(e) {
+                totalUsd += Number(e.weeklySalaryUsd) || 0;
+                totalLbp += Number(e.weeklySalaryLbp) || 0;
+            });
+            totalsEl.textContent = `Weekly Payroll Total: $${totalUsd.toFixed(2)}   |   L.L ${formatLbp(totalLbp)}`;
+        }
+
+        renderWeeklyPayroll();
+    }
+
+    function getWeekEndingSaturday(dateStr) {
+        const base = dateStr ? new Date(dateStr + 'T00:00:00') : new Date();
+        if (isNaN(base.getTime())) return '';
+        const day = base.getDay(); // 0=Sun, 6=Sat
+        const diff = (6 - day + 7) % 7;
+        const end = new Date(base);
+        end.setDate(base.getDate() + diff);
+        return end.toISOString().split('T')[0];
+    }
+
+    function setWeeklyPayrollToThisSaturday() {
+        const end = getWeekEndingSaturday(new Date().toISOString().split('T')[0]);
+        const input = document.getElementById('weeklyPayrollEndDate');
+        if (input) input.value = end;
+        weeklyPayrollEndDate = end;
+        renderWeeklyPayroll();
+    }
+
+    function onWeeklyPayrollDateChange(value) {
+        weeklyPayrollEndDate = getWeekEndingSaturday(value);
+        const input = document.getElementById('weeklyPayrollEndDate');
+        if (input) input.value = weeklyPayrollEndDate;
+        renderWeeklyPayroll();
+    }
+
+    function renderWeeklyPayroll() {
+        try { if (window.garageDB) { employees = window.garageDB.getAll('employees') || employees || []; } } catch(e) {}
+        rebuildPayrollPaymentsFromEmployees();
+
+        if (!weeklyPayrollEndDate) {
+            weeklyPayrollEndDate = getWeekEndingSaturday(new Date().toISOString().split('T')[0]);
+            const input = document.getElementById('weeklyPayrollEndDate');
+            if (input) input.value = weeklyPayrollEndDate;
+        }
+
+        const tbody = document.querySelector('#weeklyPayrollTable tbody');
+        if (!tbody) return;
+
+        const paidMap = new Map();
+        (payrollPayments || []).forEach(function(p) {
+            if (String(p.weekEnding || '') !== String(weeklyPayrollEndDate)) return;
+            paidMap.set(String(p.employeeId), p);
+        });
+
+        let totalUsd = 0;
+        let totalLbp = 0;
+
+        tbody.innerHTML = (employees || []).map(function(e) {
+            const paid = paidMap.get(String(e.id));
+            const weeklyUsd = Number(e.weeklySalaryUsd) || 0;
+            const weeklyLbp = Number(e.weeklySalaryLbp) || 0;
+            if (paid) {
+                totalUsd += (Number(paid.baseUsd) || 0) + (Number(paid.bonusUsd) || 0);
+                totalLbp += (Number(paid.baseLbp) || 0) + (Number(paid.bonusLbp) || 0);
+            }
+            return `
+                <tr>
+                    <td>${e.name || ''}</td>
+                    <td>${weeklyUsd.toFixed(2)}</td>
+                    <td>${formatLbp(weeklyLbp)}</td>
+                    <td>${paid ? 'PAID' : 'UNPAID'}</td>
+                    <td>
+                        ${paid
+                            ? `<button class="btn btn-small btn-warning" onclick="markWeeklyUnpaid(${e.id})">Mark Unpaid</button>`
+                            : `<button class="btn btn-small btn-success" onclick="openWeeklyPayroll(${e.id})">Mark Paid</button>`
+                        }
+                    </td>
+                </tr>
+            `;
+        }).join('');
+
+        const totalsEl = document.getElementById('weeklyPayrollTotals');
+        if (totalsEl) {
+            totalsEl.textContent = `Total Paid (Week Ending ${weeklyPayrollEndDate}): $${totalUsd.toFixed(2)}   |   L.L ${formatLbp(totalLbp)}`;
+        }
+    }
+
+    function onPayrollSearch(value) {
+        payrollSearchTerm = String(value || '').trim().toLowerCase();
+        renderPayrollPayments();
+    }
+
+    function renderPayrollPayments() {
+        try { if (window.garageDB) { employees = window.garageDB.getAll('employees') || employees || []; } } catch(e) {}
+        rebuildPayrollPaymentsFromEmployees();
+
+        const tbody = document.querySelector('#payrollTable tbody');
+        if (!tbody) return;
+
+        const empById = new Map((employees || []).map(function(e){ return [String(e.id), e]; }));
+        const list = (payrollPayments || []).slice().sort(function(a, b) {
+            const da = String(a.date || '');
+            const db = String(b.date || '');
+            if (da !== db) return db.localeCompare(da);
+            return (b.id || 0) - (a.id || 0);
+        }).filter(function(p) {
+            if (!payrollSearchTerm) return true;
+            const emp = empById.get(String(p.employeeId)) || {};
+            const name = String(emp.name || '').toLowerCase();
+            const notes = String(p.notes || '').toLowerCase();
+            return name.includes(payrollSearchTerm) || notes.includes(payrollSearchTerm);
+        });
+
+        let totalUsd = 0;
+        let totalLbp = 0;
+
+        tbody.innerHTML = list.map(function(p) {
+            const emp = empById.get(String(p.employeeId)) || {};
+            const baseUsd = Number(p.baseUsd) || 0;
+            const baseLbp = Number(p.baseLbp) || 0;
+            const bonusUsd = Number(p.bonusUsd) || 0;
+            const bonusLbp = Number(p.bonusLbp) || 0;
+            totalUsd += (baseUsd + bonusUsd);
+            totalLbp += (baseLbp + bonusLbp);
+            return `
+                <tr>
+                    <td>${p.date || ''}</td>
+                    <td>${emp.name || ''}</td>
+                    <td>${baseUsd.toFixed(2)}</td>
+                    <td>${formatLbp(baseLbp)}</td>
+                    <td>${bonusUsd.toFixed(2)}</td>
+                    <td>${formatLbp(bonusLbp)}</td>
+                    <td>${p.notes || ''}</td>
+                    <td class="actions">
+                        ${hasPerm("*") ? `<button class="icon-btn edit" title="Edit" onclick="openModal('payroll', ${p.id})">✏️</button>` : ``}
+                        ${hasPerm("*") ? `<button class="icon-btn delete" title="Delete" onclick="deleteItem('payroll', ${p.id})">🗑️</button>` : ``}
+                    </td>
+                </tr>
+            `;
+        }).join('');
+
+        const totalsEl = document.getElementById('payrollTotals');
+        if (totalsEl) {
+            totalsEl.textContent = `Total Paid: $${totalUsd.toFixed(2)}   |   L.L ${formatLbp(totalLbp)}`;
+        }
     }
 
     // ========= INVOICE RENDER WITH PAGINATION =========
@@ -4357,7 +7478,9 @@ rows.forEach(function (row, idxRow) {
         const prevBtn = document.getElementById('invoicesPrevPage');
         const nextBtn = document.getElementById('invoicesNextPage');
 
-        const sorted = invoices.slice().sort(function(a, b) {
+        const sorted = (invoices || []).filter(function(inv) {
+            return !isInvoiceA(inv);
+        }).slice().sort(function(a, b) {
             return b.id - a.id;
         });
 
@@ -4415,6 +7538,77 @@ rows.forEach(function (row, idxRow) {
         if (nextBtn) nextBtn.disabled = invoicePage >= pageCount || totalInvoices === 0;
     }
 
+    function renderInvoiceA() {
+        try { if (window.garageDB) { invoices = window.garageDB.getAll('invoices') || invoices || []; } } catch(e) {}
+
+        const tbody = document.querySelector('#invoiceATable tbody');
+        const pageInfoEl = document.getElementById('invoiceAPageInfo');
+        const pageSizeSelect = document.getElementById('invoiceAPageSizeSelect');
+        const prevBtn = document.getElementById('invoiceAPrevPage');
+        const nextBtn = document.getElementById('invoiceANextPage');
+
+        if (!tbody) return;
+
+        const sorted = (invoices || []).filter(function(inv) {
+            return isInvoiceA(inv);
+        }).slice().sort(function(a, b) {
+            return b.id - a.id;
+        });
+
+        const totalInvoices = sorted.length;
+        const pageCount = totalInvoices === 0 ? 1 : Math.ceil(totalInvoices / invoiceAPageSize);
+
+        if (invoiceAPage > pageCount) invoiceAPage = pageCount;
+        if (invoiceAPage < 1) invoiceAPage = 1;
+
+        const startIndex = (invoiceAPage - 1) * invoiceAPageSize;
+        const endIndex = startIndex + invoiceAPageSize;
+        const pageItems = sorted.slice(startIndex, endIndex);
+
+        tbody.innerHTML = pageItems.map(function(inv) {
+            const client = clients.find(function(c) { return c.id === inv.clientId; });
+            const car = inv.carId ? cars.find(function(c) { return c.id === inv.carId; }) : null;
+            const f = getInvoiceFinancials(inv);
+            const statusClass = f.status === 'paid' ? 'status-paid' : 'status-unpaid';
+            const statusText = f.status === 'paid' ? '✓ PAID' : '⏳ UNPAID';
+            const statusButton = f.status === 'paid'
+                ? '<button class="btn btn-warning btn-small" onclick="togglePaymentStatus(' + inv.id + ')">Mark Unpaid</button>'
+                : '<button class="btn btn-success btn-small" onclick="togglePaymentStatus(' + inv.id + ')">Mark Paid</button>';
+
+            return `
+                <tr>
+                    <td>${inv.invoiceNumber || ''}</td>
+                    <td>${inv.date || ''}</td>
+                    <td>${client ? client.name : 'N/A'}</td>
+                    <td>${car ? (car.make + ' ' + car.model) : 'N/A'}</td>
+                    <td>${f.total.toFixed(2)}</td>
+                    <td>${f.amountPaid.toFixed(2)}</td>
+                    <td>${f.remaining.toFixed(2)}</td>
+                    <td class="${statusClass}">${statusText}</td>
+                    <td class="actions">
+                        ${hasPerm("*") ? statusButton : ``}
+                        <button class="btn btn-success btn-small" onclick="printInvoiceA(${inv.id})">Print</button>
+                        ${hasPerm("*") ? `<button class="icon-btn edit" title="Edit" onclick="openModal('invoiceA', ${inv.id})">✏️</button>` : ``}
+                        ${hasPerm("*") ? `<button class="icon-btn delete" title="Delete" onclick="deleteItem('invoice', ${inv.id})">🗑️</button>` : ``}
+                    </td>
+                </tr>
+            `;
+        }).join('');
+
+        if (pageInfoEl) {
+            if (totalInvoices === 0) {
+                pageInfoEl.textContent = 'No invoices';
+            } else {
+                pageInfoEl.textContent = 'Page ' + invoiceAPage + ' of ' + pageCount + ' (' + totalInvoices + ' total)';
+            }
+        }
+        if (pageSizeSelect && parseInt(pageSizeSelect.value) !== invoiceAPageSize) {
+            pageSizeSelect.value = String(invoiceAPageSize);
+        }
+        if (prevBtn) prevBtn.disabled = invoiceAPage <= 1 || totalInvoices === 0;
+        if (nextBtn) nextBtn.disabled = invoiceAPage >= pageCount || totalInvoices === 0;
+    }
+
     
 // ======= QUICK ADD CAR (from Client list / Client cars modal) =======
 function addCarForClient(clientId) {
@@ -4448,6 +7642,158 @@ function addCarForClient(clientId) {
         if (typeof filterCarClientOptions === 'function') filterCarClientOptions();
     }, 40);
 }
+
+    function onExpenseSearch(value) {
+        expenseSearchTerm = String(value || '').trim().toLowerCase();
+        expensePage = 1;
+        renderExpenses();
+    }
+
+    function setExpensePageSize(value) {
+        const newSize = parseInt(value) || 10;
+        expensePageSize = newSize;
+        expensePage = 1;
+        renderExpenses();
+    }
+
+    function expensePrevPage() {
+        expensePage = Math.max(1, expensePage - 1);
+        renderExpenses();
+    }
+
+    function expenseNextPage() {
+        expensePage += 1;
+        renderExpenses();
+    }
+
+    function renderExpenses() {
+        try {
+            if (window.garageDB) {
+                expenses = window.garageDB.getAll('expenses') || expenses || [];
+            }
+        } catch (e) {}
+
+        const tbody = document.querySelector('#expensesTable tbody');
+        if (!tbody) return;
+
+        const term = String(expenseSearchTerm || '');
+        const filtered = (expenses || []).filter(function(e) {
+            if (!term) return true;
+            const cat = (e.category || '').toLowerCase();
+            const vendor = (e.vendor || '').toLowerCase();
+            const notes = (e.notes || '').toLowerCase();
+            const method = (e.paymentMethod || '').toLowerCase();
+            const curr = (e.currency || '').toLowerCase();
+            return cat.includes(term) || vendor.includes(term) || notes.includes(term) || method.includes(term) || curr.includes(term);
+        });
+
+        const sorted = filtered.slice().sort(function(a, b) {
+            const aKey = String(a.date || '').trim();
+            const bKey = String(b.date || '').trim();
+            if (aKey && bKey && aKey !== bKey) return aKey < bKey ? 1 : -1;
+            const aId = Number((a && a.id) || 0);
+            const bId = Number((b && b.id) || 0);
+            return bId - aId;
+        });
+
+        const total = sorted.length;
+        const totalPages = Math.max(1, Math.ceil(total / expensePageSize));
+        if (expensePage > totalPages) expensePage = totalPages;
+        if (expensePage < 1) expensePage = 1;
+
+        const startIdx = (expensePage - 1) * expensePageSize;
+        const pageRows = sorted.slice(startIdx, startIdx + expensePageSize);
+
+        let totalUsd = 0;
+        let totalLbp = 0;
+        filtered.forEach(function(e) {
+            const amount = Number(e.amount) || 0;
+            const curr = (e.currency === 'LBP') ? 'LBP' : 'USD';
+            if (curr === 'LBP') totalLbp += amount;
+            else totalUsd += amount;
+        });
+
+        let html = '';
+        let currentDate = null;
+        let dayUsd = 0;
+        let dayLbp = 0;
+        function flushDayTotal() {
+            if (!currentDate) return;
+            html += `
+                <tr>
+                    <td colspan="3"><strong>${currentDate} Total</strong></td>
+                    <td><strong>${dayUsd.toFixed(2)}</strong></td>
+                    <td><strong>${formatLbp(dayLbp)}</strong></td>
+                    <td colspan="3"></td>
+                </tr>
+            `;
+            dayUsd = 0;
+            dayLbp = 0;
+        }
+
+        pageRows.forEach(function(e) {
+            const dateKey = String(e.date || '').trim() || 'No Date';
+            if (currentDate !== dateKey) {
+                if (currentDate !== null) flushDayTotal();
+                currentDate = dateKey;
+            }
+            const amount = Number(e.amount) || 0;
+            const curr = (e.currency === 'LBP') ? 'LBP' : 'USD';
+            if (curr === 'LBP') dayLbp += amount;
+            else dayUsd += amount;
+            html += `
+                <tr>
+                    <td>${e.date || ''}</td>
+                    <td>${e.category || ''}</td>
+                    <td>${e.vendor || ''}</td>
+                    <td>${curr === 'LBP' ? formatLbp(amount) : amount.toFixed(2)}</td>
+                    <td>${curr === 'USD' ? '$' : 'L.L'}</td>
+                    <td>${e.paymentMethod || ''}</td>
+                    <td>${e.notes || ''}</td>
+                    <td class="actions">
+                        ${hasPerm("*") ? `<button class="icon-btn edit" title="Edit" onclick="openModal('expense', ${e.id})">✏️</button>` : ``}
+                        ${hasPerm("*") ? `<button class="icon-btn delete" title="Delete" onclick="deleteItem('expense', ${e.id})">🗑️</button>` : ``}
+                    </td>
+                </tr>
+            `;
+        });
+        flushDayTotal();
+        tbody.innerHTML = html;
+
+        const pageInfo = document.getElementById('expensesPageInfo');
+        const countInfo = document.getElementById('expensesCountInfo');
+        const prevBtn = document.getElementById('expensesPrevBtn');
+        const nextBtn = document.getElementById('expensesNextBtn');
+        const sizeSel = document.getElementById('expensesPageSize');
+
+        if (pageInfo) pageInfo.textContent = `Page ${expensePage} / ${totalPages}`;
+        if (countInfo) {
+            const from = total === 0 ? 0 : (startIdx + 1);
+            const to = Math.min(startIdx + expensePageSize, total);
+            countInfo.textContent = `Showing ${from}-${to} of ${total}`;
+        }
+        if (prevBtn) prevBtn.disabled = (expensePage <= 1);
+        if (nextBtn) nextBtn.disabled = (expensePage >= totalPages);
+        if (sizeSel && String(sizeSel.value) !== String(expensePageSize)) sizeSel.value = String(expensePageSize);
+
+        const totalsEl = document.getElementById('expensesTotals');
+        if (totalsEl) {
+            const rate = getLbpUsdRate();
+            const converted = rate ? (totalLbp / rate) : 0;
+            const totalCombined = rate ? (totalUsd + converted) : totalUsd;
+            const convertedText = rate ? `   |   Total (USD incl. L.L): ${totalCombined.toFixed(2)}` : '';
+            const today = new Date().toISOString().split('T')[0];
+            let incomeToday = 0;
+            (invoices || []).forEach(function(inv) {
+                const paidAt = String(inv.paidAt || '').trim();
+                if (paidAt !== today) return;
+                const f = getInvoiceFinancials(inv);
+                if (f.status === 'paid') incomeToday += f.total;
+            });
+            const netToday = incomeToday - totalCombined;
+            totalsEl.textContent = `Total (USD incl. L.L): ${totalCombined.toFixed(2)}   ||   Today Income (USD): ${incomeToday.toFixed(2)}   |   Net Today (USD): ${netToday.toFixed(2)}`;
+        }
+    }
 
 // ======= CAR MODAL: FAST CLIENT SELECT (limit to 20, search filters full list) =======
 
@@ -4540,17 +7886,14 @@ function quickInvoiceForClient(clientId) {
         const cid = String(clientId || '').trim();
         if (!cid) return;
 
-        const clientSelect = document.getElementById('invoiceClientId');
-        if (clientSelect) {
-            const hasOption = Array.from(clientSelect.options || []).some(function(o){ return String(o.value) === cid; });
-            if (!hasOption) {
-                const cl = (Array.isArray(clients) ? clients : []).find(function(x){ return String(x.id) === cid; });
-                const opt = document.createElement('option');
-                opt.value = cid;
-                opt.textContent = cl ? (cl.name || ('Client #' + cid)) : ('Client #' + cid);
-                clientSelect.appendChild(opt);
-            }
-            clientSelect.value = cid;
+        const clientIdInput = document.getElementById('invoiceClientId');
+        const clientSearch = document.getElementById('invoiceClientSearch');
+        if (clientIdInput) clientIdInput.value = cid;
+        if (clientSearch) {
+            const cl = (Array.isArray(clients) ? clients : []).find(function(x){ return String(x.id) === cid; });
+            const label = cl ? (cl.phone ? (cl.name + ' - ' + cl.phone) : (cl.name || ('Client #' + cid))) : ('Client #' + cid);
+            clientSearch.value = label;
+            clientSearch.setAttribute('data-client-name', label);
         }
 
         // Refresh car dropdown for this client
@@ -4568,6 +7911,7 @@ function quickInvoiceForClient(clientId) {
     }, 40);
 }
 
+
 function quickInvoiceForCar(carId) {
     if (typeof requireAdminAction === 'function' && !requireAdminAction()) return;
 
@@ -4579,17 +7923,16 @@ function quickInvoiceForCar(carId) {
 
         // Set client first (so car list becomes filtered + consistent)
         const cid = String(car.clientId || '').trim();
-        const clientSelect = document.getElementById('invoiceClientId');
-        if (clientSelect && cid) {
-            const hasOption = Array.from(clientSelect.options || []).some(function(o){ return String(o.value) === cid; });
-            if (!hasOption) {
+        const clientIdInput = document.getElementById('invoiceClientId');
+        const clientSearch = document.getElementById('invoiceClientSearch');
+        if (clientIdInput && cid) {
+            clientIdInput.value = cid;
+            if (clientSearch) {
                 const cl = (Array.isArray(clients) ? clients : []).find(function(x){ return String(x.id) === cid; });
-                const opt = document.createElement('option');
-                opt.value = cid;
-                opt.textContent = cl ? (cl.name || ('Client #' + cid)) : ('Client #' + cid);
-                clientSelect.appendChild(opt);
+                const label = cl ? (cl.phone ? (cl.name + ' - ' + cl.phone) : (cl.name || ('Client #' + cid))) : ('Client #' + cid);
+                clientSearch.value = label;
+                clientSearch.setAttribute('data-client-name', label);
             }
-            clientSelect.value = cid;
         }
 
         // Refresh dropdown then select car
@@ -4604,10 +7947,11 @@ function quickInvoiceForCar(carId) {
             if (typeof onInvoiceCarSelectChange === 'function') onInvoiceCarSelectChange(String(car.id));
         }
 
-        // Focus barcode / first item input if you want
-        try { if (typeof focusInvoiceBarcodeInput === 'function') focusInvoiceBarcodeInput(); } catch(e){}
+        const carSearch = document.getElementById('invoiceCarSearch');
+        if (carSearch) carSearch.value = '';
     }, 40);
 }
+
 
 function changeInvoicePage(delta) {
         invoicePage += delta;
@@ -4619,6 +7963,18 @@ function changeInvoicePage(delta) {
         invoicePageSize = newSize;
         invoicePage = 1;
         renderInvoices();
+    }
+
+    function changeInvoiceAPage(delta) {
+        invoiceAPage += delta;
+        renderInvoiceA();
+    }
+
+    function setInvoiceAPageSize(value) {
+        const newSize = parseInt(value) || 10;
+        invoiceAPageSize = newSize;
+        invoiceAPage = 1;
+        renderInvoiceA();
     }
 
     // ======= REPORTS =======
@@ -4652,7 +8008,7 @@ function changeInvoicePage(delta) {
             endDateInput.disabled = true;
             statusSelect.disabled = true;
             clientSelect.disabled = true;
-        } else if (type === 'inventory' || type === 'lowStock') {
+        } else if (type === 'inventory' || type === 'lowStock' || type === 'inventoryCost' || type === 'weeklyPayroll') {
             startDateInput.disabled = true;
             endDateInput.disabled = true;
             statusSelect.disabled = true;
@@ -4662,6 +8018,21 @@ function changeInvoicePage(delta) {
             endDateInput.disabled = false;
             statusSelect.disabled = false;
             clientSelect.disabled = false;
+        } else if (type === 'expenseToday') {
+            startDateInput.disabled = true;
+            endDateInput.disabled = true;
+            statusSelect.disabled = true;
+            clientSelect.disabled = true;
+        } else if (type === 'incomeToday') {
+            startDateInput.disabled = true;
+            endDateInput.disabled = true;
+            statusSelect.disabled = true;
+            clientSelect.disabled = true;
+        } else if (type === 'payrollPayments') {
+            startDateInput.disabled = false;
+            endDateInput.disabled = false;
+            statusSelect.disabled = true;
+            clientSelect.disabled = true;
         } else if (type === 'salesSummary' || type === 'invoiceList' || type === 'itemSales') {
             clientSelect.disabled = (type === 'salesSummary');
         }
@@ -4695,10 +8066,22 @@ function changeInvoicePage(delta) {
             renderReportSalesSummary();
         } else if (type === 'itemSales') {
             renderReportItemSales();
+        } else if (type === 'topItems') {
+            renderReportTopItems();
         } else if (type === 'invoiceList') {
             renderReportInvoiceList();
         } else if (type === 'inventory') {
             renderReportInventory();
+        } else if (type === 'inventoryCost') {
+            renderReportInventoryCost();
+        } else if (type === 'expenseToday') {
+            renderReportExpenseToday();
+        } else if (type === 'incomeToday') {
+            renderReportIncomeToday();
+        } else if (type === 'weeklyPayroll') {
+            renderReportWeeklyPayroll();
+        } else if (type === 'payrollPayments') {
+            renderReportPayrollPayments();
         } else if (type === 'lowStock') {
             renderReportLowStock();
         } else if (type === 'clientHistory') {
@@ -4897,6 +8280,115 @@ function changeInvoicePage(delta) {
         `;
     }
 
+    // NEW: TOP ITEMS SOLD (sorted by quantity)
+    function renderReportTopItems() {
+        const reportArea = document.getElementById('reportArea');
+        const list = filterInvoicesForReport();
+
+        if (list.length === 0) {
+            reportArea.innerHTML = '<p>No invoices found for this filter.</p>';
+            return;
+        }
+
+        const salesMap = {};
+        let grandQty = 0;
+        let grandTotal = 0;
+
+        list.forEach(function(inv) {
+            if (!inv.items) return;
+
+            inv.items.forEach(function(line) {
+                const qty = parseInt(line.quantity) || 0;
+                const price = parseFloat(line.price) || 0;
+                if (qty <= 0) return;
+
+                const lineTotal = qty * price;
+                grandQty += qty;
+                grandTotal += lineTotal;
+
+                let key;
+                if (line.itemId) {
+                    key = 'stock-' + line.itemId;
+                } else {
+                    key = 'custom-' + (line.name || 'Custom Item');
+                }
+
+                if (!salesMap[key]) {
+                    let stockItem = null;
+                    let partNumber = '';
+                    let displayName = line.name || '';
+
+                    if (line.itemId) {
+                        stockItem = items.find(function(i) { return i.id === line.itemId; });
+                        if (stockItem) {
+                            if (!displayName) displayName = stockItem.name;
+                            partNumber = stockItem.partNumber || '';
+                        }
+                    }
+
+                    if (!displayName) {
+                        displayName = 'Item';
+                    }
+
+                    salesMap[key] = {
+                        itemId: line.itemId || null,
+                        name: displayName,
+                        partNumber: partNumber,
+                        totalQty: 0,
+                        totalSales: 0
+                    };
+                }
+
+                salesMap[key].totalQty += qty;
+                salesMap[key].totalSales += lineTotal;
+            });
+        });
+
+        const keys = Object.keys(salesMap);
+        if (keys.length === 0) {
+            reportArea.innerHTML = '<p>No item sales found for this filter.</p>';
+            return;
+        }
+
+        keys.sort(function(a, b) {
+            return salesMap[b].totalQty - salesMap[a].totalQty;
+        });
+
+        const rows = keys.map(function(key) {
+            const entry = salesMap[key];
+            return `
+                <tr>
+                    <td>${entry.name}</td>
+                    <td>${entry.partNumber || ''}</td>
+                    <td>${entry.totalQty}</td>
+                    <td>${entry.totalSales.toFixed(2)}</td>
+                </tr>
+            `;
+        }).join('');
+
+        reportArea.innerHTML = `
+            <h3>Top Items Sold</h3>
+            <div class="report-summary">
+                Total quantity sold: ${grandQty}
+                &nbsp; | &nbsp;
+                Total sales: $${grandTotal.toFixed(2)}
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Item</th>
+                        <th>Part #</th>
+                        <th>Quantity Sold</th>
+                        <th>Total Sales</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${rows}
+                </tbody>
+            </table>
+        `;
+    }
+
     function renderReportInvoiceList() {
         const reportArea = document.getElementById('reportArea');
         const list = filterInvoicesForReport();
@@ -4955,12 +8447,13 @@ function changeInvoicePage(delta) {
 
     function renderReportInventory() {
         const reportArea = document.getElementById('reportArea');
-        if (items.length === 0) {
+        const stockItems = (items || []).filter(function(i) { return !isServiceItem(i); });
+        if (stockItems.length === 0) {
             reportArea.innerHTML = '<p>No items in inventory.</p>';
             return;
         }
 
-        const rows = items.map(function(i) {
+        const rows = stockItems.map(function(i) {
             const stock = getItemTotalQty(i) || 0;
             const threshold = i.lowStockThreshold || 5;
             const isLowStock = stock <= threshold;
@@ -4999,9 +8492,298 @@ function changeInvoicePage(delta) {
         `;
     }
 
+    // NEW: INVENTORY COST SUMMARY
+    function renderReportInventoryCost() {
+        const reportArea = document.getElementById('reportArea');
+        const canSeeCost = (typeof hasItemAdminAccess === 'function')
+            ? hasItemAdminAccess()
+            : (typeof hasPerm === 'function' ? hasPerm("*") : false);
+
+        if (!canSeeCost) {
+            reportArea.innerHTML = '<p>Access denied. Only Main Admin or Saadeyat Stock can view inventory cost.</p>';
+            return;
+        }
+
+        const stockItems = (items || []).filter(function(i) { return !isServiceItem(i); });
+        if (stockItems.length === 0) {
+            reportArea.innerHTML = '<p>No items in inventory.</p>';
+            return;
+        }
+
+        const qtyFn = (typeof getItemTotalQty === 'function')
+            ? getItemTotalQty
+            : function(it){ return parseInt(it && it.quantity, 10) || 0; };
+        const safeIntLocal = (typeof safeInt === 'function')
+            ? safeInt
+            : function(n){ const x = parseInt(n, 10); return isNaN(x) ? 0 : x; };
+
+        let totalQty = 0;
+        let totalCost = 0;
+
+        const rows = stockItems.map(function(i) {
+            const qty = safeIntLocal(qtyFn(i));
+            const cost = parseFloat(i.costPrice || i.cost || i.cost_price || 0) || 0;
+            const line = cost * qty;
+            totalQty += qty;
+            totalCost += line;
+            return `
+                <tr>
+                    <td>${i.name || ''}</td>
+                    <td>${i.partNumber || ''}</td>
+                    <td>${cost.toFixed(2)}</td>
+                    <td>${qty}</td>
+                    <td>${line.toFixed(2)}</td>
+                </tr>
+            `;
+        }).join('');
+
+        reportArea.innerHTML = `
+            <h3>Inventory Cost Summary</h3>
+            <div class="report-summary">
+                Total quantity: ${totalQty}
+                &nbsp; | &nbsp;
+                Total cost: $${totalCost.toFixed(2)}
+            </div>
+            <div style="margin:10px 0;">
+                <button class="btn btn-secondary print-btn" type="button" onclick="printReportArea()">Print</button>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Item</th>
+                        <th>Part #</th>
+                        <th>Cost Price</th>
+                        <th>Quantity</th>
+                        <th>Total Cost</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${rows}
+                </tbody>
+            </table>
+        `;
+    }
+
+    // NEW: TODAY EXPENSES TOTAL (USD/LBP)
+    function renderReportExpenseToday() {
+        const reportArea = document.getElementById('reportArea');
+        const today = new Date().toISOString().split('T')[0];
+
+        const list = (expenses || []).filter(function(e) {
+            return String(e.date || '').trim() === today;
+        });
+
+        if (list.length === 0) {
+            reportArea.innerHTML = `<p>No expenses found for today (${today}).</p>`;
+            return;
+        }
+
+        let totalUsd = 0;
+        let totalLbp = 0;
+        list.forEach(function(e) {
+            const amount = Number(e.amount) || 0;
+            const curr = (e.currency === 'LBP') ? 'LBP' : 'USD';
+            if (curr === 'LBP') totalLbp += amount;
+            else totalUsd += amount;
+        });
+
+        reportArea.innerHTML = `
+            <h3>Today Expenses Total</h3>
+            <div class="report-summary">
+                Date: ${today}
+                &nbsp; | &nbsp;
+                Total (USD): ${totalUsd.toFixed(2)}
+                &nbsp; | &nbsp;
+                Total (L.L): ${formatLbp(totalLbp)}
+                ${getLbpUsdRate() ? `&nbsp; | &nbsp; Total (USD incl. L.L): ${(totalUsd + (totalLbp / getLbpUsdRate())).toFixed(2)}` : ''}
+            </div>
+        `;
+    }
+
+    // NEW: TODAY INCOME (PAID INVOICES ONLY)
+    function renderReportIncomeToday() {
+        const reportArea = document.getElementById('reportArea');
+        const today = new Date().toISOString().split('T')[0];
+
+        const list = (invoices || []).filter(function(inv) {
+            return String(inv.paidAt || '').trim() === today;
+        });
+
+        if (list.length === 0) {
+            reportArea.innerHTML = `<p>No invoices found for today (${today}).</p>`;
+            return;
+        }
+
+        let totalIncome = 0;
+        let paidCount = 0;
+        list.forEach(function(inv) {
+            const f = getInvoiceFinancials(inv);
+            if (f.status === 'paid') {
+                totalIncome += f.total;
+                paidCount += 1;
+            }
+        });
+
+        reportArea.innerHTML = `
+            <h3>Today Income (Paid Invoices)</h3>
+            <div class="report-summary">
+                Paid Date: ${today}
+                &nbsp; | &nbsp;
+                Paid invoices: ${paidCount}
+                &nbsp; | &nbsp;
+                Total income: $${totalIncome.toFixed(2)}
+            </div>
+        `;
+    }
+
+    // NEW: WEEKLY PAYROLL (USD + L.L)
+    function renderReportWeeklyPayroll() {
+        const reportArea = document.getElementById('reportArea');
+
+        if (!employees || employees.length === 0) {
+            reportArea.innerHTML = '<p>No employees found.</p>';
+            return;
+        }
+
+        let totalUsd = 0;
+        let totalLbp = 0;
+
+        const rows = employees.map(function(e) {
+            const usd = Number(e.weeklySalaryUsd) || 0;
+            const lbp = Number(e.weeklySalaryLbp) || 0;
+            totalUsd += usd;
+            totalLbp += lbp;
+            return `
+                <tr>
+                    <td>${e.name || ''}</td>
+                    <td>${e.role || ''}</td>
+                    <td>${usd.toFixed(2)}</td>
+                    <td>${formatLbp(lbp)}</td>
+                </tr>
+            `;
+        }).join('');
+
+        reportArea.innerHTML = `
+            <h3>Weekly Payroll</h3>
+            <div class="report-summary">
+                Total weekly payroll: $${totalUsd.toFixed(2)} &nbsp; | &nbsp; L.L ${formatLbp(totalLbp)}
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Employee</th>
+                        <th>Role</th>
+                        <th>Weekly Salary ($)</th>
+                        <th>Weekly Salary (L.L)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${rows}
+                </tbody>
+            </table>
+        `;
+    }
+
+    // NEW: PAYROLL PAYMENTS REPORT
+    function renderReportPayrollPayments() {
+        const reportArea = document.getElementById('reportArea');
+        const start = document.getElementById('reportStartDate').value;
+        const end = document.getElementById('reportEndDate').value;
+
+        try { if (window.garageDB) { employees = window.garageDB.getAll('employees') || employees || []; } } catch(e) {}
+        rebuildPayrollPaymentsFromEmployees();
+
+        if (!payrollPayments || payrollPayments.length === 0) {
+            reportArea.innerHTML = '<p>No payroll payments found.</p>';
+            return;
+        }
+
+        const empById = new Map((employees || []).map(function(e){ return [String(e.id), e]; }));
+        const list = payrollPayments.filter(function(p) {
+            const d = String(p.date || '');
+            if (start && d < start) return false;
+            if (end && d > end) return false;
+            return true;
+        }).sort(function(a, b) {
+            const da = String(a.date || '');
+            const db = String(b.date || '');
+            if (da !== db) return db.localeCompare(da);
+            return (b.id || 0) - (a.id || 0);
+        });
+
+        if (list.length === 0) {
+            reportArea.innerHTML = '<p>No payroll payments found for this date range.</p>';
+            return;
+        }
+
+        let totalUsd = 0;
+        let totalLbp = 0;
+
+        const rows = list.map(function(p) {
+            const emp = empById.get(String(p.employeeId)) || {};
+            const baseUsd = Number(p.baseUsd) || 0;
+            const baseLbp = Number(p.baseLbp) || 0;
+            const bonusUsd = Number(p.bonusUsd) || 0;
+            const bonusLbp = Number(p.bonusLbp) || 0;
+            totalUsd += (baseUsd + bonusUsd);
+            totalLbp += (baseLbp + bonusLbp);
+            return `
+                <tr>
+                    <td>${p.date || ''}</td>
+                    <td>${emp.name || ''}</td>
+                    <td>${baseUsd.toFixed(2)}</td>
+                    <td>${formatLbp(baseLbp)}</td>
+                    <td>${bonusUsd.toFixed(2)}</td>
+                    <td>${formatLbp(bonusLbp)}</td>
+                    <td>${p.notes || ''}</td>
+                </tr>
+            `;
+        }).join('');
+
+        reportArea.innerHTML = `
+            <h3>Payroll Payments</h3>
+            <div class="report-summary">
+                Date range: ${start || 'All'} to ${end || 'All'}
+                &nbsp; | &nbsp;
+                Total paid: $${totalUsd.toFixed(2)} &nbsp; | &nbsp; L.L ${formatLbp(totalLbp)}
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Employee</th>
+                        <th>Base ($)</th>
+                        <th>Base (L.L)</th>
+                        <th>Bonus ($)</th>
+                        <th>Bonus (L.L)</th>
+                        <th>Notes</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${rows}
+                </tbody>
+            </table>
+        `;
+    }
+
+    let __printSetupDone = false;
+    function printReportArea() {
+        try {
+            if (!__printSetupDone) {
+                __printSetupDone = true;
+                window.addEventListener('afterprint', () => {
+                    document.body.classList.remove('print-report');
+                });
+            }
+            document.body.classList.add('print-report');
+            window.print();
+        } catch (e) {}
+    }
+
     function renderReportLowStock() {
         const reportArea = document.getElementById('reportArea');
         const lowItems = items.filter(function(i) {
+            if (isServiceItem(i)) return false;
             const stock = getItemTotalQty(i) || 0;
             const threshold = i.lowStockThreshold || 5;
             return stock <= threshold;
@@ -5121,3 +8903,4 @@ function changeInvoicePage(delta) {
             </table>
         `;
     }
+

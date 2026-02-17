@@ -1,7 +1,36 @@
 
+    <!-- LOGIN SCREEN -->
+    <div id="login-screen" class="login-screen" style="display:none;">
+        <div class="login-card">
+            <div class="login-brand">
+                <div class="login-title">Hamdan Garage Manager</div>
+                <div class="login-subtitle">Sign in to continue</div>
+            </div>
+
+            <div id="login-error" class="login-error" aria-live="polite"></div>
+
+            <div class="form-group">
+                <label for="login-username">Username</label>
+                <input id="login-username" type="text" autocomplete="username" />
+            </div>
+            <div class="form-group">
+                <label for="login-password">Password</label>
+                <input id="login-password" type="password" autocomplete="current-password" />
+            </div>
+
+            <button id="login-button" class="btn btn-primary login-button" type="button">Sign in</button>
+        </div>
+    </div>
+
     <!-- MAIN APP -->
     <div class="container" id="app-root" style="display:none;">
-        <h1>🔧 Garage Management System</h1>
+        <h1>🔧 Hamdan Management System</h1>
+
+        <div class="top-actions" data-admin-only="1" style="display:flex; align-items:center; justify-content:center; gap:12px; margin:0 0 18px 0; flex-wrap:wrap;">
+            <button id="backupFolderBtn" class="btn btn-secondary" type="button">Select Backup Folder</button>
+            <button id="backupNowBtn" class="btn btn-primary" type="button">Backup Now</button>
+            <span id="backupFolderLabel" style="font-size:12px; color:#555;"></span>
+        </div>
         
         <div class="tabs">
             <button class="tab active" onclick="showTab('clients', this)">Clients</button>
@@ -10,7 +39,7 @@
             <button class="tab" onclick="showTab('invoices', this)">Invoices</button>
             <button class="tab" onclick="showTab('suppliers', this)">Suppliers</button>
             <button class="tab" onclick="showTab('employees', this)">Employees</button>
-            <button class="tab" onclick="showTab('reports', this)">Reports</button>
+                        <button class="tab" onclick="showTab('reports', this)">Reports</button>
             <button class="tab" onclick="showTab('settings', this)">Settings</button>
         </div>
 
@@ -99,6 +128,12 @@
 
                <!-- Items Tab -->
 <div id="items" class="tab-content">
+    <div class="items-subtabs">
+        <button class="items-subtab active" onclick="showItemsSubTab('stock', this)">Stock Items</button>
+        <button class="items-subtab" onclick="showItemsSubTab('service', this)">Non-Stock Items</button>
+    </div>
+
+    <div id="itemsStockSubtab" class="items-subtab-content active">
     <div class="header-actions">
         <h2>Items & Services</h2>
 
@@ -125,6 +160,7 @@
             >
                 Import Excel
             </button>
+            <button class="btn btn-secondary" type="button" onclick="toggleTagsPanel()">Tags</button>
             <button id="transferBtn" class="btn btn-warning" type="button" onclick="openTransferModal()">
                 Transform to Main
             </button>
@@ -147,7 +183,7 @@
 
     <!-- ✅ THIS TABLE WAS MISSING -->
     <!-- Tags Manager (fixed tags for items/invoice filter) -->
-    <div id="items-tags-manager" style="margin:10px 0; padding:10px; border:1px solid #ddd; border-radius:10px; background:#fff;">
+    <div id="items-tags-manager" style="display:none; margin:10px 0; padding:10px; border:1px solid #ddd; border-radius:10px; background:#fff;">
         <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
             <h3 style="margin:0;">Tags</h3>
             <input type="text" id="fixedTagInput" placeholder="Add a tag (e.g. CRV 2005)" style="flex:1; min-width:200px;">
@@ -192,44 +228,126 @@
                 </select>
             </div>
 
+    </div>
+
+    <div id="itemsServiceSubtab" class="items-subtab-content">
+        <div class="header-actions">
+            <h2>Non-Stock Items</h2>
+            <div class="search-box">
+                <input type="text"
+                       placeholder="Search services by name or code..."
+                       oninput="onServiceItemSearch(this.value)">
+            </div>
+            <button class="btn btn-primary" data-admin-only="1" onclick="openModal('serviceItem')">+ Add Service</button>
+        </div>
+        <table id="serviceItemsTable">
+            <thead>
+                <tr>
+                    <th>Code</th>
+                    <th>Name</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+        <div id="serviceItemsPager" class="pager" style="display:flex; align-items:center; gap:8px; margin-top:10px; flex-wrap:wrap;">
+            <button id="serviceItemsPrevBtn" class="btn btn-small" onclick="servicePrevPage()">â—€ Prev</button>
+            <span id="serviceItemsPageInfo" style="font-weight:600;">Page 1</span>
+            <button id="serviceItemsNextBtn" class="btn btn-small" onclick="serviceNextPage()">Next â–¶</button>
+
+            <span style="margin-left:12px; opacity:0.8;" id="serviceItemsCountInfo"></span>
+
+            <span style="margin-left:12px;">Per page:</span>
+            <select id="serviceItemsPageSize" class="btn btn-small" onchange="setServicePageSize(this.value)">
+                <option value="10" selected>10</option>
+                <option value="25">25</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+            </select>
+        </div>
+    </div>
+
 </div>
 
 
         <!-- Invoices Tab -->
         <div id="invoices" class="tab-content">
-            <div class="header-actions">
-                <h2>Invoices</h2>
-                <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-                    <div class="pagination">
-                        <button class="btn btn-small" id="invoicesPrevPage" onclick="changeInvoicePage(-1)">&lt;</button>
-                        <span id="invoicesPageInfo">Page 1</span>
-                        <button class="btn btn-small" id="invoicesNextPage" onclick="changeInvoicePage(1)">&gt;</button>
-                        <select id="invoicesPageSizeSelect" onchange="setInvoicePageSize(this.value)">
-                            <option value="10" selected>10</option>
-                            <option value="25">25</option>
-                            <option value="50">50</option>
-                            <option value="100">100</option>
-                        </select>
-                    </div>
-                    <button class="btn btn-primary" data-admin-only="1" onclick="openModal('invoice')">+ Create Invoice</button>
-                </div>
+            <div class="invoice-subtabs">
+                <button class="invoice-subtab active" onclick="showInvoiceSubTab('standard', this)">Invoice</button>
+                <button class="invoice-subtab" data-admin-only="1" onclick="showInvoiceSubTab('A', this)">Invoice A</button>
             </div>
-            <table id="invoicesTable">
-                <thead>
-                    <tr>
-                        <th>Invoice #</th>
-                        <th>Date</th>
-                        <th>Client</th>
-                        <th>Car</th>
-                        <th>Total</th>
-                        <th>Paid</th>
-                        <th>Remaining</th>
-                        <th>Status</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody></tbody>
-            </table>
+
+            <div id="invoiceSubtabStandard" class="invoice-subtab-content active">
+                <div class="header-actions">
+                    <h2>Invoices</h2>
+                    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                        <div class="pagination">
+                            <button class="btn btn-small" id="invoicesPrevPage" onclick="changeInvoicePage(-1)">&lt;</button>
+                            <span id="invoicesPageInfo">Page 1</span>
+                            <button class="btn btn-small" id="invoicesNextPage" onclick="changeInvoicePage(1)">&gt;</button>
+                            <select id="invoicesPageSizeSelect" onchange="setInvoicePageSize(this.value)">
+                                <option value="10" selected>10</option>
+                                <option value="25">25</option>
+                                <option value="50">50</option>
+                                <option value="100">100</option>
+                            </select>
+                        </div>
+                        <button class="btn btn-primary" data-admin-only="1" onclick="openModal('invoice')">+ Create Invoice</button>
+                    </div>
+                </div>
+                <table id="invoicesTable">
+                    <thead>
+                        <tr>
+                            <th>Invoice #</th>
+                            <th>Date</th>
+                            <th>Client</th>
+                            <th>Car</th>
+                            <th>Total</th>
+                            <th>Paid</th>
+                            <th>Remaining</th>
+                            <th>Status</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+
+            <div id="invoiceSubtabA" class="invoice-subtab-content" data-admin-only="1">
+                <div class="header-actions">
+                    <h2>Invoice A</h2>
+                    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                        <div class="pagination">
+                            <button class="btn btn-small" id="invoiceAPrevPage" onclick="changeInvoiceAPage(-1)">&lt;</button>
+                            <span id="invoiceAPageInfo">Page 1</span>
+                            <button class="btn btn-small" id="invoiceANextPage" onclick="changeInvoiceAPage(1)">&gt;</button>
+                            <select id="invoiceAPageSizeSelect" onchange="setInvoiceAPageSize(this.value)">
+                                <option value="10" selected>10</option>
+                                <option value="25">25</option>
+                                <option value="50">50</option>
+                                <option value="100">100</option>
+                            </select>
+                        </div>
+                        <button class="btn btn-primary" data-admin-only="1" onclick="openModal('invoiceA')">+ Create Invoice A</button>
+                    </div>
+                </div>
+                <table id="invoiceATable">
+                    <thead>
+                        <tr>
+                            <th>Invoice #</th>
+                            <th>Date</th>
+                            <th>Client</th>
+                            <th>Car</th>
+                            <th>Total</th>
+                            <th>Paid</th>
+                            <th>Remaining</th>
+                            <th>Status</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
         </div>
 
         <!-- Suppliers Tab -->
@@ -266,12 +384,64 @@
                         <th>Phone</th>
                         <th>Email</th>
                         <th>Role</th>
+                        <th>Weekly Salary ($)</th>
+                        <th>Weekly Salary (L.L)</th>
                         <th>Notes</th>
                         <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody></tbody>
             </table>
+            <div id="employeesTotals" style="margin-top:10px; font-weight:700;"></div>
+
+            <div style="margin-top:22px; padding-top:10px; border-top:2px solid #ddd;">
+                <div class="header-actions">
+                    <h2>Weekly Payments (Week Ending Saturday)</h2>
+                    <div class="search-box">
+                        <input type="date" id="weeklyPayrollEndDate" onchange="onWeeklyPayrollDateChange(this.value)">
+                    </div>
+                    <button class="btn btn-secondary" type="button" onclick="setWeeklyPayrollToThisSaturday()">This Saturday</button>
+                </div>
+                <table id="weeklyPayrollTable">
+                    <thead>
+                        <tr>
+                            <th>Employee</th>
+                            <th>Weekly Salary ($)</th>
+                            <th>Weekly Salary (L.L)</th>
+                            <th>Status</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+                <div id="weeklyPayrollTotals" style="margin-top:10px; font-weight:700;"></div>
+            </div>
+
+            <div style="margin-top:22px; padding-top:10px; border-top:2px solid #ddd;">
+                <div class="header-actions">
+                    <h2>Payroll Payments</h2>
+                    <div class="search-box">
+                        <input type="text" placeholder="Search by employee or notes..." oninput="onPayrollSearch(this.value)">
+                    </div>
+                    <button class="btn btn-primary" data-admin-only="1" onclick="openPayrollModal()">+ Add Payroll</button>
+                </div>
+                <table id="payrollTable">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Employee</th>
+                            <th>Base ($)</th>
+                            <th>Base (L.L)</th>
+                            <th>Bonus ($)</th>
+                            <th>Bonus (L.L)</th>
+                            <th>Notes</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+                <div id="payrollTotals" style="margin-top:10px; font-weight:700;"></div>
+            </div>
         </div>
 
         <!-- Reports Tab -->
@@ -286,8 +456,14 @@
                         <option value="clientBalances">Client Balances</option>
                         <option value="salesSummary">Sales Summary</option>
                         <option value="itemSales">Sales of Items</option>
+                        <option value="topItems">Top Items Sold</option>
                         <option value="invoiceList">Invoice List</option>
                         <option value="inventory">Inventory</option>
+                        <option value="inventoryCost">Inventory Cost Summary</option>
+                        <option value="expenseToday">Today Expenses Total</option>
+                        <option value="incomeToday">Today Income (Paid Invoices)</option>
+                        <option value="weeklyPayroll">Weekly Payroll</option>
+                        <option value="payrollPayments">Payroll Payments</option>
                         <option value="lowStock">Low Stock</option>
                         <option value="clientHistory">Client History</option>
                     </select>
@@ -412,10 +588,27 @@
                 <input type="text" id="invoice-header-line3" placeholder="e.g. 71334040 / 03334040">
             </div>
             <div class="form-group">
+                <label>TVA Registration No</label>
+                <input type="text" id="invoice-tva-reg-no" placeholder="e.g. 3887585">
+            </div>
+            <div class="form-group">
                 <button class="btn btn-primary" data-admin-disable="1" type="button" onclick="saveInvoiceHeaderSettings()">Save Invoice Header</button>
             </div>
 
             <hr style="margin:15px 0;">
+
+            <!-- NEW: EXCHANGE RATE SETTINGS -->
+            <h3 style="margin-top:20px; margin-bottom:10px;">Currency Settings</h3>
+            <div class="form-group">
+                <label>LBP to USD Rate</label>
+                <input type="number" id="lbp-usd-rate" placeholder="e.g. 90000">
+                <div style="font-size:12px; color:#666; margin-top:6px;">
+                    Used to convert L.L to USD for expense totals.
+                </div>
+            </div>
+            <div class="form-group">
+                <button class="btn btn-primary" data-admin-disable="1" type="button" onclick="saveCurrencySettings()">Save Rate</button>
+            </div>
 
             <div class="form-group">
                 <button class="btn btn-warning" onclick="logout()">Log Out</button>

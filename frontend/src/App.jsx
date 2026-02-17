@@ -4,7 +4,7 @@ import "./react-ui.css";
 import { installGarageBridge } from "./legacyBridge";
 
 const loadedScripts = new Set();
-const NO_LOGIN = true;
+const NO_LOGIN = false;
 const DEFAULT_USER = { username: "device", role: "main_admin" };
 
 // Detect if running in Electron
@@ -12,6 +12,7 @@ const isElectron = typeof window !== 'undefined' && window.isElectron === true;
 const API_BASE = isElectron ? "http://localhost:4000" : (import.meta.env.VITE_API_BASE || "");
 
 const AUTH_TOKEN_KEY = "garage_auth_token";
+const STORED_USER_KEY = "garage_current_user";
 
 function buildApiUrl(path) {
   if (!API_BASE) return path;
@@ -25,6 +26,21 @@ function getAuthHeaders() {
     if (token) headers.Authorization = `Bearer ${token}`;
   } catch (e) {}
   return headers;
+}
+
+function friendlySyncError(message) {
+  const text = String(message || "").trim();
+  if (!text) return "Sync failed";
+  if (/Failed to fetch|fetch failed/i.test(text)) {
+    return "Cannot reach local backend (http://localhost:4000). Restart the app.";
+  }
+  if (/getaddrinfo ENOTFOUND/i.test(text)) {
+    return "Sync server not reachable (DNS). Check internet connection.";
+  }
+  if (/SYNC_REMOTE_URL|SYNC_DEVICE_TOKEN/i.test(text)) {
+    return "Sync not configured. Set SYNC_REMOTE_URL and SYNC_DEVICE_TOKEN in backend/.env and restart.";
+  }
+  return text;
 }
 
 function loadScript(src) {
@@ -61,13 +77,45 @@ function App() {
   const [syncError, setSyncError] = useState("");
   const [showConflicts, setShowConflicts] = useState(false);
   const [conflicts, setConflicts] = useState([]);
+  const [conflictsTotal, setConflictsTotal] = useState(0);
+  const [conflictsPage, setConflictsPage] = useState(1);
+  const [conflictsPageSize] = useState(10);
   const [conflictsLoading, setConflictsLoading] = useState(false);
   const [conflictsError, setConflictsError] = useState("");
   const [clearingConflictId, setClearingConflictId] = useState(null);
   const [pushFullLoading, setPushFullLoading] = useState(false);
   const [pushFullError, setPushFullError] = useState("");
+  const lastUserRawRef = useRef(null);
 
   const isAdmin = user && user.role === "main_admin";
+
+  useEffect(() => {
+    function handleUserChanged(event) {
+      setUser(event && Object.prototype.hasOwnProperty.call(event, "detail") ? event.detail : null);
+    }
+    window.addEventListener("garage-user-changed", handleUserChanged);
+    return () => {
+      window.removeEventListener("garage-user-changed", handleUserChanged);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!legacyReady) return;
+    function syncStoredUser() {
+      try {
+        const raw = window.localStorage.getItem(STORED_USER_KEY);
+        if (raw === lastUserRawRef.current) return;
+        lastUserRawRef.current = raw;
+        const next = raw ? JSON.parse(raw) : null;
+        setUser(next);
+      } catch (e) {}
+    }
+    syncStoredUser();
+    const timer = window.setInterval(syncStoredUser, 1000);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [legacyReady]);
 
   useEffect(() => {
     window.__USE_REACT_LOGIN = true;
@@ -126,13 +174,20 @@ function App() {
         const res = await fetch(buildApiUrl("/api/sync/status"), {
           headers: getAuthHeaders()
         });
-        if (!res.ok) return;
+        if (!res.ok) {
+          setSyncError(friendlySyncError(`Request failed (${res.status})`));
+          return;
+        }
         const data = await res.json();
         if (!cancelled) {
           setSyncStatus(data);
           setSyncError(data.lastSyncError || "");
         }
-      } catch (e) {}
+      } catch (e) {
+        if (!cancelled) {
+          setSyncError(friendlySyncError(e && e.message ? e.message : "Sync failed"));
+        }
+      }
     }
     if (user) {
       loadSyncStatus();
@@ -181,7 +236,7 @@ function App() {
         data = {};
       }
       if (!res.ok) {
-        setSyncError(data && data.error ? data.error : "Sync failed");
+        setSyncError(friendlySyncError(data && data.error ? data.error : "Sync failed"));
       } else if (data && data.result) {
         if (window.__garageRefreshCache) {
           try {
@@ -192,7 +247,7 @@ function App() {
         setSyncStatus((prev) => ({ ...prev, lastSyncTime: data.result.serverTime }));
       }
     } catch (e) {
-      setSyncError(e && e.message ? e.message : "Sync failed");
+      setSyncError(friendlySyncError(e && e.message ? e.message : "Sync failed"));
     } finally {
       setSyncing(false);
     }
@@ -213,7 +268,7 @@ function App() {
         data = {};
       }
       if (!res.ok) {
-        setPushFullError(data && data.error ? data.error : "Push all failed");
+        setPushFullError(friendlySyncError(data && data.error ? data.error : "Push all failed"));
         return;
       }
       if (window.__garageRefreshCache) {
@@ -224,30 +279,36 @@ function App() {
       if (typeof window.showApp === "function") window.showApp();
       setPushFullError("");
     } catch (e) {
-      setPushFullError(e && e.message ? e.message : "Push all failed");
+      setPushFullError(friendlySyncError(e && e.message ? e.message : "Push all failed"));
     } finally {
       setPushFullLoading(false);
     }
   }
 
-  async function loadConflicts() {
+  async function loadConflicts(page = conflictsPage) {
     if (!user) return;
     setConflictsLoading(true);
     setConflictsError("");
     try {
-      const res = await fetch(buildApiUrl("/api/sync/conflicts"), {
+      const nextPage = Math.max(1, Number(page) || 1);
+      const offset = (nextPage - 1) * conflictsPageSize;
+      const res = await fetch(buildApiUrl(`/api/sync/conflicts?limit=${conflictsPageSize}&offset=${offset}`), {
         headers: getAuthHeaders()
       });
       const data = await res.json();
       if (!res.ok) {
         setConflictsError(data && data.error ? data.error : "Failed to load conflicts");
         setConflicts([]);
+        setConflictsTotal(0);
         return;
       }
       setConflicts(Array.isArray(data && data.conflicts) ? data.conflicts : []);
+      setConflictsTotal(Number(data && data.total) || 0);
+      setConflictsPage(nextPage);
     } catch (e) {
       setConflictsError("Failed to load conflicts");
       setConflicts([]);
+      setConflictsTotal(0);
     } finally {
       setConflictsLoading(false);
     }
@@ -276,10 +337,37 @@ function App() {
     }
   }
 
+  async function clearAllConflicts() {
+    if (!conflictsTotal) return;
+    const ok = window.confirm("Clear ALL sync conflicts? This only deletes conflict records, not your data.");
+    if (!ok) return;
+    setConflictsError("");
+    setConflictsLoading(true);
+    try {
+      const res = await fetch(buildApiUrl("/api/sync/conflicts"), {
+        method: "DELETE",
+        headers: getAuthHeaders()
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setConflictsError(data && data.error ? data.error : "Failed to clear conflicts");
+      } else {
+        setConflicts([]);
+        setConflictsTotal(0);
+        setConflictsPage(1);
+      }
+    } catch (e) {
+      setConflictsError("Failed to clear conflicts");
+    } finally {
+      setConflictsLoading(false);
+    }
+  }
   function openConflicts() {
     setShowConflicts(true);
-    loadConflicts();
+    loadConflicts(1);
   }
+
+  const conflictPageCount = Math.max(1, Math.ceil(conflictsTotal / conflictsPageSize));
 
   return (
     <>
@@ -307,7 +395,6 @@ function App() {
                   <span className="sync-meta">
                     Pending: {syncStatus.pendingOps || 0} | Conflicts: {syncStatus.conflicts || 0}
                   </span>
-                  {syncError ? <span className="sync-error">{syncError}</span> : null}
                 </div>
               )}
 
@@ -327,6 +414,7 @@ function App() {
                   </button>
                 </>
               ) : null}
+              {syncError ? <span className="sync-error">{syncError}</span> : null}
               {pushFullError ? <span className="sync-error">{pushFullError}</span> : null}
             </div>
           </div>
@@ -339,6 +427,9 @@ function App() {
                   <div className="react-modal-actions">
                     <button className="btn btn-secondary" type="button" onClick={loadConflicts} disabled={conflictsLoading}>
                       Refresh
+                    </button>
+                    <button className="btn btn-danger" type="button" onClick={clearAllConflicts} disabled={conflictsLoading || conflictsTotal === 0}>
+                      Clear All
                     </button>
                     <button className="btn btn-warning" type="button" onClick={() => setShowConflicts(false)}>
                       Close
@@ -398,6 +489,30 @@ function App() {
                           </div>
                         </details>
                       ))}
+                    </div>
+                  ) : null}
+
+                  {!conflictsLoading && conflictsTotal > 0 ? (
+                    <div className="conflicts-pager" style={{ display: "flex", alignItems: "center", gap: "10px", marginTop: "12px", flexWrap: "wrap" }}>
+                      <button
+                        className="btn btn-secondary"
+                        type="button"
+                        onClick={() => loadConflicts(conflictsPage - 1)}
+                        disabled={conflictsPage <= 1}
+                      >
+                        Prev
+                      </button>
+                      <span>
+                        Page {conflictsPage} / {conflictPageCount} (Total {conflictsTotal})
+                      </span>
+                      <button
+                        className="btn btn-secondary"
+                        type="button"
+                        onClick={() => loadConflicts(conflictsPage + 1)}
+                        disabled={conflictsPage >= conflictPageCount}
+                      >
+                        Next
+                      </button>
                     </div>
                   ) : null}
                 </div>

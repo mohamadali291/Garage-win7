@@ -5,7 +5,7 @@ import react from "@vitejs/plugin-react";
 // script-src includes 'unsafe-inline' because the legacy UI uses inline event handlers (onclick, onchange, etc.).
 // Not applied in dev so Vite HMR can run.
 const CSP_META =
-  '<meta http-equiv="Content-Security-Policy" content="default-src \'self\'; script-src \'self\' \'unsafe-inline\'; style-src \'self\' \'unsafe-inline\'; img-src \'self\' data:; connect-src \'self\' http://localhost:* http://127.0.0.1:* https:; font-src \'self\'; base-uri \'self\'">';
+  '<meta http-equiv="Content-Security-Policy" content="default-src \'self\'; script-src \'self\' \'unsafe-inline\'; style-src \'self\' \'unsafe-inline\'; img-src \'self\' data: https: http:; connect-src \'self\' http://localhost:* http://127.0.0.1:* https:; font-src \'self\'; base-uri \'self\'">';
 
 export default defineConfig({
   base: "./",

@@ -12,7 +12,10 @@ const VALID_COLLECTIONS = [
   "employees",
   "warehouses",
   "settings",
-  "transfers"
+  "transfers",
+  "expenses",
+  "payrollPayments",
+  "serviceItems"
 ];
 
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, "..", "data", "garage.sqlite");
@@ -781,10 +784,51 @@ function listConflicts() {
   });
 }
 
+function listConflictsPaged(limit = 10, offset = 0) {
+  const db = getDb();
+  const lim = Math.max(1, Math.min(1000, Number(limit) || 10));
+  const off = Math.max(0, Number(offset) || 0);
+  const rows = db.prepare(`
+    SELECT * FROM sync_conflicts ORDER BY created_at DESC LIMIT ? OFFSET ?
+  `).all(lim, off);
+  return rows.map((row) => {
+    let server = null;
+    let client = null;
+    if (row.server_record) {
+      try {
+        server = JSON.parse(row.server_record);
+      } catch (e) {
+        server = null;
+      }
+    }
+    if (row.client_op) {
+      try {
+        client = JSON.parse(row.client_op);
+      } catch (e) {
+        client = null;
+      }
+    }
+    return {
+      conflictId: row.conflict_id,
+      tableName: row.table_name,
+      recordId: row.record_id,
+      server,
+      client,
+      createdAt: row.created_at
+    };
+  });
+}
+
 function removeConflict(conflictId) {
   const db = getDb();
   const info = db.prepare("DELETE FROM sync_conflicts WHERE conflict_id = ?").run(String(conflictId));
   return info && info.changes > 0;
+}
+
+function clearAllConflicts() {
+  const db = getDb();
+  const info = db.prepare("DELETE FROM sync_conflicts").run();
+  return info && info.changes ? info.changes : 0;
 }
 
 function hasConflictForRecord(tableName, recordId) {
@@ -954,7 +998,9 @@ module.exports = {
   countPendingOps,
   addConflict,
   listConflicts,
+  listConflictsPaged,
   removeConflict,
+  clearAllConflicts,
   hasConflictForRecord,
   countConflicts,
   generateOpId

@@ -37,7 +37,9 @@ const {
   countPendingOps,
   addConflict,
   listConflicts,
+  listConflictsPaged,
   removeConflict,
+  clearAllConflicts,
   hasConflictForRecord,
   countConflicts,
   authenticateUser,
@@ -57,8 +59,11 @@ const SYNC_ROLE = (process.env.SYNC_ROLE || "server").toLowerCase();
 const SYNC_REMOTE_URL = process.env.SYNC_REMOTE_URL || "";
 const SYNC_DEVICE_TOKEN = process.env.SYNC_DEVICE_TOKEN || "";
 const SYNC_INTERVAL_MS = Number(process.env.SYNC_INTERVAL_MS || 0);
-const NO_LOGIN =
-  String(process.env.NO_LOGIN || "").toLowerCase() === "true" || SYNC_ROLE === "client";
+const NO_LOGIN = String(process.env.NO_LOGIN || "").toLowerCase() === "true";
+const SYNC_CONFLICT_POLICY = String(process.env.SYNC_CONFLICT_POLICY || "strict").toLowerCase();
+const AUTO_BACKUP_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
+const AUTO_BACKUP_CHECK_MS = 60 * 60 * 1000;
+const AUTO_BACKUP_SETTING_ID = "last_auto_backup_time";
 
 app.set("etag", false);
 
@@ -131,6 +136,14 @@ function requireWriteAccess(req, res, next) {
     return res.status(400).json({ error: "Invalid collection" });
   }
   if (!canWriteCollection(req.user.role, collection)) {
+    if (req.user.role === "saadeyat_stock" && collection === "settings") {
+      const bodyId = req.body && req.body.id != null ? String(req.body.id) : "";
+      const paramId = req.params && req.params.id != null ? String(req.params.id) : "";
+      const targetId = bodyId || paramId;
+      if (targetId === "fixed_tags") {
+        return next();
+      }
+    }
     return res.status(403).json({ error: "Forbidden" });
   }
   next();
@@ -158,8 +171,15 @@ function getRemoteBaseUrl() {
 }
 async function requestRemote(method, path, body) {
   if (!fetchFn) {
-    const mod = await import("node-fetch");
-    fetchFn = mod.default || mod;
+    try {
+      // CommonJS fallback (works on older Node)
+      // eslint-disable-next-line global-require
+      const mod = require("node-fetch");
+      fetchFn = mod && mod.default ? mod.default : mod;
+    } catch (e) {
+      const mod = await import("node-fetch");
+      fetchFn = mod.default || mod;
+    }
   }
   const url = getRemoteBaseUrl() + path;
   const headers = {
@@ -181,7 +201,19 @@ async function requestRemote(method, path, body) {
     }
   }
   if (!res.ok) {
-    const err = new Error(data && data.error ? data.error : `Request failed (${res.status})`);
+    let message = "";
+    if (data && data.error) {
+      message = data.error;
+    } else if (data && Array.isArray(data.errors) && data.errors.length > 0) {
+      const first = data.errors[0] || {};
+      const detail = first.error || JSON.stringify(first);
+      message = `Sync push error: ${detail}`;
+    } else if (typeof data === "string" && data.trim()) {
+      message = data.trim();
+    } else {
+      message = `Request failed (${res.status})`;
+    }
+    const err = new Error(message);
     err.status = res.status;
     err.data = data;
     throw err;
@@ -195,9 +227,115 @@ function getBaseVersion(tableName, recordId) {
 }
 
 function shouldSyncRecord(collection, recordId) {
+  if (collection === "payrollPayments") return false;
   if (collection !== "settings") return true;
   const key = String(recordId || "");
-  return key !== "current_user" && key !== "last_sync_time";
+  return (
+    key !== "current_user" &&
+    key !== "last_sync_time" &&
+    key !== "backup_folder" &&
+    key !== AUTO_BACKUP_SETTING_ID
+  );
+}
+
+function getBackupFolderSetting() {
+  const rec = getById("settings", "backup_folder");
+  if (!rec || rec.value == null) return "";
+  return String(rec.value || "");
+}
+
+function getElectronDialog() {
+  try {
+    const electron = require("electron");
+    if (electron && electron.dialog) return electron.dialog;
+  } catch (_) {}
+  return null;
+}
+
+function getElectronApp() {
+  try {
+    const electron = require("electron");
+    if (electron && electron.app) return electron.app;
+  } catch (_) {}
+  return null;
+}
+
+function buildBackupFilename() {
+  const stamp = new Date()
+    .toISOString()
+    .replace(/[:.]/g, "-")
+    .replace("T", "_")
+    .replace("Z", "");
+  return `garage.sqlite.${stamp}.bak`;
+}
+
+async function createBackupFile(folder) {
+  const targetDir = String(folder || "").trim();
+  if (!targetDir) throw new Error("Backup folder not set");
+  fs.mkdirSync(targetDir, { recursive: true });
+  const outPath = path.join(targetDir, buildBackupFilename());
+  const db = getDb();
+  if (db && typeof db.backup === "function") {
+    await db.backup(outPath);
+  } else {
+    const fallbackDbPath = process.env.DB_PATH || path.join(__dirname, "..", "data", "garage.sqlite");
+    fs.copyFileSync(fallbackDbPath, outPath);
+  }
+  return outPath;
+}
+
+function clearPendingOpsForTable(tableName) {
+  try {
+    const db = getDb();
+    db.prepare("DELETE FROM pending_ops WHERE table_name = ?").run(String(tableName));
+  } catch (_) {}
+}
+
+function getLastAutoBackupTime() {
+  const rec = getById("settings", AUTO_BACKUP_SETTING_ID);
+  if (!rec || rec.value == null) return 0;
+  const value = Number(rec.value);
+  return Number.isFinite(value) ? value : 0;
+}
+
+function setLastAutoBackupTime(ts) {
+  upsert("settings", { id: AUTO_BACKUP_SETTING_ID, value: Number(ts) });
+}
+
+let autoBackupInFlight = null;
+async function runAutoBackupIfDue() {
+  if (autoBackupInFlight) return autoBackupInFlight;
+  autoBackupInFlight = (async () => {
+    const folder = getBackupFolderSetting();
+    if (!folder) return { skipped: "no_folder" };
+    const last = getLastAutoBackupTime();
+    const now = Date.now();
+    if (last && now - last < AUTO_BACKUP_INTERVAL_MS) {
+      return { skipped: "not_due" };
+    }
+    const file = await createBackupFile(folder);
+    setLastAutoBackupTime(now);
+    return { ok: true, file };
+  })();
+  try {
+    return await autoBackupInFlight;
+  } finally {
+    autoBackupInFlight = null;
+  }
+}
+
+function scheduleAutoBackup() {
+  if (AUTO_BACKUP_INTERVAL_MS <= 0 || AUTO_BACKUP_CHECK_MS <= 0) return;
+  setTimeout(() => {
+    runAutoBackupIfDue().catch((err) => {
+      console.log("Auto backup failed:", err && err.message ? err.message : err);
+    });
+  }, 10 * 1000);
+  setInterval(() => {
+    runAutoBackupIfDue().catch((err) => {
+      console.log("Auto backup failed:", err && err.message ? err.message : err);
+    });
+  }, AUTO_BACKUP_CHECK_MS);
 }
 
 function queueBulkOps(collection, nextItems, existingItems) {
@@ -239,6 +377,7 @@ async function runClientSync() {
   if (syncInFlight) return syncInFlight;
 
   syncInFlight = (async () => {
+    clearPendingOpsForTable("payrollPayments");
     const pending = listPendingOps();
     const ops = pending.map((op) => ({
       opId: op.opId,
@@ -252,6 +391,7 @@ async function runClientSync() {
     let appliedIds = [];
     let conflictIds = [];
     let errorOps = [];
+    let pushWarning = null;
 
     if (ops.length > 0) {
       try {
@@ -260,14 +400,32 @@ async function runClientSync() {
         conflictIds = (pushRes.conflicts || []).map((item) => item.opId).filter(Boolean);
         errorOps = (pushRes.errors || []).map((item) => item.opId).filter(Boolean);
       } catch (err) {
-        if (err && err.status === 409 && err.data) {
-          const data = err.data;
+        if (err && err.data && (err.data.applied || err.data.conflicts || err.data.errors)) {
+          const data = err.data || {};
           appliedIds = (data.applied || []).map((item) => item.opId).filter(Boolean);
           conflictIds = (data.conflicts || []).map((item) => item.opId).filter(Boolean);
           errorOps = (data.errors || []).map((item) => item.opId).filter(Boolean);
-          (data.conflicts || []).forEach((conflict) => {
-            addConflict(conflict);
-          });
+          if (Array.isArray(data.conflicts) && data.conflicts.length > 0) {
+            data.conflicts.forEach((conflict) => {
+              addConflict(conflict);
+            });
+          }
+          if (Array.isArray(data.errors) && data.errors.length > 0) {
+            const opById = new Map(ops.map((op) => [op.opId, op]));
+            const invalidCollections = new Set();
+            data.errors.forEach((item) => {
+              if (!item || item.error !== "Invalid collection") return;
+              const op = opById.get(item.opId);
+              if (op && op.tableName) invalidCollections.add(op.tableName);
+            });
+            if (invalidCollections.size > 0) {
+              pushWarning = `Sync skipped ${data.errors.length} ops for unsupported collections: ${Array.from(
+                invalidCollections
+              ).join(", ")}`;
+            } else {
+              pushWarning = `Sync skipped ${data.errors.length} ops due to server errors`;
+            }
+          }
         } else {
           throw err;
         }
@@ -312,7 +470,7 @@ async function runClientSync() {
     const serverTime = pullRes.serverTime || Date.now();
     upsert("settings", { id: "last_sync_time", value: Number(serverTime) });
 
-    lastSyncError = null;
+    lastSyncError = pushWarning;
     return {
       pushed: {
         total: ops.length,
@@ -325,7 +483,8 @@ async function runClientSync() {
         applied,
         skipped
       },
-      serverTime: Number(serverTime)
+      serverTime: Number(serverTime),
+      warning: pushWarning
     };
   })();
 
@@ -341,9 +500,17 @@ async function runPushFull() {
   if (!SYNC_REMOTE_URL || !SYNC_DEVICE_TOKEN) throw new Error("SYNC_REMOTE_URL and SYNC_DEVICE_TOKEN are required");
   const collections = {};
   VALID_COLLECTIONS.forEach((name) => {
+    if (name === "payrollPayments") return;
     let items = getAll(name);
     if (name === "settings") {
-      items = items.filter((item) => item && item.id !== "current_user" && item.id !== "last_sync_time");
+      items = items.filter(
+        (item) =>
+          item &&
+          item.id !== "current_user" &&
+          item.id !== "last_sync_time" &&
+          item.id !== "backup_folder" &&
+          item.id !== AUTO_BACKUP_SETTING_ID
+      );
     }
     collections[name] = items;
   });
@@ -363,6 +530,40 @@ app.get("/api/bootstrap", requireAuth, (req, res) => {
 
   const users = NO_LOGIN ? [] : req.user.role === "main_admin" ? listUsers() : [];
   res.json({ collections, users });
+});
+
+app.post("/api/backup/select-folder", requireAuth, async (req, res) => {
+  const dialog = getElectronDialog();
+  if (!dialog) {
+    return res.status(400).json({ error: "Backup folder selection is available only in the desktop app." });
+  }
+  try {
+    const appRef = getElectronApp();
+    const saved = getBackupFolderSetting();
+    const defaultPath = saved || (appRef && appRef.getPath ? appRef.getPath("documents") : undefined);
+    const result = await dialog.showOpenDialog({
+      properties: ["openDirectory", "createDirectory"],
+      defaultPath
+    });
+    if (result.canceled || !result.filePaths || !result.filePaths[0]) {
+      return res.json({ folder: null, cancelled: true });
+    }
+    return res.json({ folder: result.filePaths[0] });
+  } catch (err) {
+    return res.status(500).json({ error: err && err.message ? err.message : "Failed to open folder picker" });
+  }
+});
+
+app.post("/api/backup/run", requireAuth, async (req, res) => {
+  let folder = req.body && req.body.folder ? String(req.body.folder) : "";
+  if (!folder) folder = getBackupFolderSetting();
+  if (!folder) return res.status(400).json({ error: "Backup folder not set" });
+  try {
+    const file = await createBackupFile(folder);
+    res.json({ ok: true, file });
+  } catch (err) {
+    res.status(500).json({ error: err && err.message ? err.message : "Backup failed" });
+  }
 });
 
 app.post("/api/auth/login", (req, res) => {
@@ -545,7 +746,15 @@ app.post("/api/sync/push", requireServerRole, requireDeviceAuth, (req, res) => {
     const currentVersion = current ? Number(current.version) : 0;
     const baseVersion = Number(op.baseVersion || 0);
 
-    if (baseVersion !== currentVersion) {
+    const isConflict = baseVersion !== currentVersion;
+    if (isConflict) {
+      const policy = SYNC_CONFLICT_POLICY;
+      if (policy === "server_wins") {
+        markSyncOp(op.opId, req.device.deviceId);
+        applied.push({ opId: op.opId, status: "ignored" });
+        return;
+      }
+      if (policy !== "client_wins" && policy !== "last_write_wins" && policy !== "overwrite") {
       conflicts.push({
         opId: op.opId,
         tableName: op.tableName,
@@ -558,6 +767,7 @@ app.post("/api/sync/push", requireServerRole, requireDeviceAuth, (req, res) => {
         }
       });
       return;
+      }
     }
 
     if (op.op === "delete") {
@@ -672,7 +882,17 @@ app.post("/api/sync/push-full", requireAuth, async (req, res) => {
 
 app.get("/api/sync/conflicts", requireAuth, (req, res) => {
   if (req.user.role !== "main_admin") return res.status(403).json({ error: "Forbidden" });
-  res.json({ conflicts: listConflicts() });
+  const limit = Number(req.query && req.query.limit) || 10;
+  const offset = Number(req.query && req.query.offset) || 0;
+  const conflicts = listConflictsPaged(limit, offset);
+  const total = countConflicts();
+  res.json({ conflicts, total, limit, offset });
+});
+
+app.delete("/api/sync/conflicts", requireAuth, (req, res) => {
+  if (req.user.role !== "main_admin") return res.status(403).json({ error: "Forbidden" });
+  const removed = clearAllConflicts();
+  res.json({ ok: true, removed });
 });
 
 app.delete("/api/sync/conflicts/:id", requireAuth, (req, res) => {
@@ -688,6 +908,8 @@ if (SYNC_ROLE === "client" && SYNC_INTERVAL_MS > 0) {
     });
   }, SYNC_INTERVAL_MS);
 }
+
+scheduleAutoBackup();
 
 // Serve built frontend as a local website (when frontend/dist exists)
 const frontendDist = path.join(__dirname, "..", "..", "frontend", "dist");
