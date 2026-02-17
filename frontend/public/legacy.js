@@ -6055,6 +6055,17 @@ function togglePaymentStatus(invoiceId) {
     renderClients();
 }
 
+// Bind once: handle Mark Paid/Unpaid buttons via event delegation
+if (!window.__togglePaymentHandlerBound) {
+    window.__togglePaymentHandlerBound = true;
+    document.addEventListener('click', function (e) {
+        const btn = e.target.closest('.js-toggle-payment');
+        if (!btn) return;
+        const id = btn.getAttribute('data-invoice-id');
+        togglePaymentStatus(id);
+    });
+}
+
     // ======= SHOW CLIENT INVOICES (FROM CLIENT TAB) =======
 
 function showClientInvoices(clientId) {
@@ -7500,10 +7511,10 @@ function renderEmployees() {
             const f = getInvoiceFinancials(inv);
             const statusClass = f.status === 'paid' ? 'status-paid' : 'status-unpaid';
             const statusText = f.status === 'paid' ? '✓ PAID' : '⏳ UNPAID';
-            const safeInvoiceId = Number(inv.id);
+            const safeInvoiceId = String(inv.id).replace(/"/g, "&quot;");
             const statusButton = f.status === 'paid'
-                ? `<button class="btn btn-warning btn-small" onclick="togglePaymentStatus(${safeInvoiceId})">Mark Unpaid</button>`
-                : `<button class="btn btn-success btn-small" onclick="togglePaymentStatus(${safeInvoiceId})">Mark Paid</button>`;
+                ? `<button class="btn btn-warning btn-small js-toggle-payment" data-invoice-id="${safeInvoiceId}">Mark Unpaid</button>`
+                : `<button class="btn btn-success btn-small js-toggle-payment" data-invoice-id="${safeInvoiceId}">Mark Paid</button>`;
             
             return `
                 <tr>
@@ -7572,10 +7583,10 @@ function renderEmployees() {
             const f = getInvoiceFinancials(inv);
             const statusClass = f.status === 'paid' ? 'status-paid' : 'status-unpaid';
             const statusText = f.status === 'paid' ? '✓ PAID' : '⏳ UNPAID';
-            const safeInvoiceId = Number(inv.id);
+            const safeInvoiceId = String(inv.id).replace(/"/g, "&quot;");
             const statusButton = f.status === 'paid'
-                ? `<button class="btn btn-warning btn-small" onclick="togglePaymentStatus(${safeInvoiceId})">Mark Unpaid</button>`
-                : `<button class="btn btn-success btn-small" onclick="togglePaymentStatus(${safeInvoiceId})">Mark Paid</button>`;
+                ? `<button class="btn btn-warning btn-small js-toggle-payment" data-invoice-id="${safeInvoiceId}">Mark Unpaid</button>`
+                : `<button class="btn btn-success btn-small js-toggle-payment" data-invoice-id="${safeInvoiceId}">Mark Paid</button>`;
 
             return `
                 <tr>
