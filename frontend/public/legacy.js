@@ -7500,10 +7500,10 @@ function renderEmployees() {
             const f = getInvoiceFinancials(inv);
             const statusClass = f.status === 'paid' ? 'status-paid' : 'status-unpaid';
             const statusText = f.status === 'paid' ? '✓ PAID' : '⏳ UNPAID';
-            const safeInvoiceId = String(inv.id).replace(/'/g, "\\'");
-            const statusButton = f.status === 'paid' 
-                ? '<button class="btn btn-warning btn-small" onclick="togglePaymentStatus(\'' + safeInvoiceId + '\')">Mark Unpaid</button>'
-                : '<button class="btn btn-success btn-small" onclick="togglePaymentStatus(\'' + safeInvoiceId + '\')">Mark Paid</button>';
+            const safeInvoiceId = JSON.stringify(String(inv.id));
+            const statusButton = f.status === 'paid'
+                ? `<button class="btn btn-warning btn-small" onclick="togglePaymentStatus(${safeInvoiceId})">Mark Unpaid</button>`
+                : `<button class="btn btn-success btn-small" onclick="togglePaymentStatus(${safeInvoiceId})">Mark Paid</button>`;
             
             return `
                 <tr>
@@ -7572,10 +7572,10 @@ function renderEmployees() {
             const f = getInvoiceFinancials(inv);
             const statusClass = f.status === 'paid' ? 'status-paid' : 'status-unpaid';
             const statusText = f.status === 'paid' ? '✓ PAID' : '⏳ UNPAID';
-            const safeInvoiceId = String(inv.id).replace(/'/g, "\\'");
+            const safeInvoiceId = JSON.stringify(String(inv.id));
             const statusButton = f.status === 'paid'
-                ? '<button class="btn btn-warning btn-small" onclick="togglePaymentStatus(\'' + safeInvoiceId + '\')">Mark Unpaid</button>'
-                : '<button class="btn btn-success btn-small" onclick="togglePaymentStatus(\'' + safeInvoiceId + '\')">Mark Paid</button>';
+                ? `<button class="btn btn-warning btn-small" onclick="togglePaymentStatus(${safeInvoiceId})">Mark Unpaid</button>`
+                : `<button class="btn btn-success btn-small" onclick="togglePaymentStatus(${safeInvoiceId})">Mark Paid</button>`;
 
             return `
                 <tr>
