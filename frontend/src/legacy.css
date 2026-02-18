@@ -982,3 +982,8 @@ tbody tr:hover td:first-child {
 /* Win7 invoices action alignment to right */
 #invoicesTable td.actions,#invoiceATable td.actions{justify-content:flex-end}
 
+
+/* Win7 invoices action tighter right */
+#invoicesTable td.actions,#invoiceATable td.actions{justify-content:flex-end;padding-right:6px;white-space:nowrap;width:1%}
+#invoicesTable th:last-child,#invoiceATable th:last-child{text-align:right}
+
