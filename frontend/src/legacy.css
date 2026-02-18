@@ -987,3 +987,19 @@ tbody tr:hover td:first-child {
 #invoicesTable td.actions,#invoiceATable td.actions{justify-content:flex-end;padding-right:6px;white-space:nowrap;width:1%}
 #invoicesTable th:last-child,#invoiceATable th:last-child{text-align:right}
 
+
+/* Win7 invoice actions cleanup */
+#invoicesTable td.actions,#invoiceATable td.actions{justify-content:flex-end;gap:4px;flex-wrap:nowrap}
+#invoicesTable td.actions .btn,#invoiceATable td.actions .btn{padding:3px 6px;font-size:10px}
+#invoicesTable td.actions .icon-btn,#invoiceATable td.actions .icon-btn{width:24px;height:24px}
+#invoicesTable td.actions .icon-btn::after,#invoiceATable td.actions .icon-btn::after{width:12px;height:12px;background-size:12px 12px}
+#invoicesTable td.actions .btn-success,#invoiceATable td.actions .btn-success{min-width:auto}
+#invoicesTable td.actions .btn-secondary,#invoiceATable td.actions .btn-secondary{min-width:auto}
+
+
+/* Win7 invoice actions: hard right align under Actions header */
+#invoicesTable td.actions,#invoiceATable td.actions{display:table-cell!important;text-align:right!important;padding-right:6px!important;white-space:nowrap}
+#invoicesTable td.actions .btn,#invoiceATable td.actions .btn{display:inline-block!important;margin-left:4px!important}
+#invoicesTable td.actions .icon-btn,#invoiceATable td.actions .icon-btn{display:inline-flex!important;margin-left:4px!important}
+#invoicesTable th:last-child,#invoiceATable th:last-child{text-align:right!important}
+
