@@ -9,3 +9,7 @@
 #invoicesTable td.actions .btn,#invoiceATable td.actions .btn{padding:4px 8px;font-size:11px;line-height:1.2}
 #invoicesTable td.actions .icon-btn,#invoiceATable td.actions .icon-btn{width:28px;height:28px}
 
+
+/* Win7 invoices action alignment to right */
+#invoicesTable td.actions,#invoiceATable td.actions{justify-content:flex-end}
+
