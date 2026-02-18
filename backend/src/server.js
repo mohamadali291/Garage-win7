@@ -42,6 +42,7 @@ const {
   clearAllConflicts,
   hasConflictForRecord,
   countConflicts,
+  generateOpId,
   authenticateUser,
   listUsers,
   createUser,
@@ -171,15 +172,8 @@ function getRemoteBaseUrl() {
 }
 async function requestRemote(method, path, body) {
   if (!fetchFn) {
-    try {
-      // CommonJS fallback (works on older Node)
-      // eslint-disable-next-line global-require
-      const mod = require("node-fetch");
-      fetchFn = mod && mod.default ? mod.default : mod;
-    } catch (e) {
-      const mod = await import("node-fetch");
-      fetchFn = mod.default || mod;
-    }
+    const mod = await import("node-fetch");
+    fetchFn = mod.default || mod;
   }
   const url = getRemoteBaseUrl() + path;
   const headers = {
@@ -364,6 +358,63 @@ function queueBulkOps(collection, nextItems, existingItems) {
   });
 }
 
+async function pushOpsInBatches(ops) {
+  const batchSize = Math.max(1, Number(process.env.SYNC_PUSH_BATCH_SIZE || 200));
+  const appliedIds = [];
+  const conflictIds = [];
+  const errorOps = [];
+  const invalidCollections = new Set();
+  let errorCount = 0;
+
+  for (let i = 0; i < ops.length; i += batchSize) {
+    const batch = ops.slice(i, i + batchSize);
+    let data = null;
+    try {
+      data = await requestRemote("POST", "/api/sync/push", { ops: batch });
+    } catch (err) {
+      if (err && err.data && (err.data.applied || err.data.conflicts || err.data.errors)) {
+        data = err.data || {};
+      } else {
+        throw err;
+      }
+    }
+
+    const applied = (data.applied || []).map((item) => item.opId).filter(Boolean);
+    const conflicts = (data.conflicts || []).map((item) => item.opId).filter(Boolean);
+    const errors = (data.errors || []).map((item) => item.opId).filter(Boolean);
+    appliedIds.push(...applied);
+    conflictIds.push(...conflicts);
+    errorOps.push(...errors);
+
+    if (Array.isArray(data.conflicts) && data.conflicts.length > 0) {
+      data.conflicts.forEach((conflict) => addConflict(conflict));
+    }
+
+    if (Array.isArray(data.errors) && data.errors.length > 0) {
+      errorCount += data.errors.length;
+      const opById = new Map(batch.map((op) => [op.opId, op]));
+      data.errors.forEach((item) => {
+        if (!item || item.error !== "Invalid collection") return;
+        const op = opById.get(item.opId);
+        if (op && op.tableName) invalidCollections.add(op.tableName);
+      });
+    }
+  }
+
+  let pushWarning = null;
+  if (errorCount > 0) {
+    if (invalidCollections.size > 0) {
+      pushWarning = `Sync skipped ${errorCount} ops for unsupported collections: ${Array.from(
+        invalidCollections
+      ).join(", ")}`;
+    } else {
+      pushWarning = `Sync skipped ${errorCount} ops due to server errors`;
+    }
+  }
+
+  return { appliedIds, conflictIds, errorOps, pushWarning };
+}
+
 let syncInFlight = null;
 let lastSyncError = null;
 
@@ -394,42 +445,11 @@ async function runClientSync() {
     let pushWarning = null;
 
     if (ops.length > 0) {
-      try {
-        const pushRes = await requestRemote("POST", "/api/sync/push", { ops });
-        appliedIds = (pushRes.applied || []).map((item) => item.opId).filter(Boolean);
-        conflictIds = (pushRes.conflicts || []).map((item) => item.opId).filter(Boolean);
-        errorOps = (pushRes.errors || []).map((item) => item.opId).filter(Boolean);
-      } catch (err) {
-        if (err && err.data && (err.data.applied || err.data.conflicts || err.data.errors)) {
-          const data = err.data || {};
-          appliedIds = (data.applied || []).map((item) => item.opId).filter(Boolean);
-          conflictIds = (data.conflicts || []).map((item) => item.opId).filter(Boolean);
-          errorOps = (data.errors || []).map((item) => item.opId).filter(Boolean);
-          if (Array.isArray(data.conflicts) && data.conflicts.length > 0) {
-            data.conflicts.forEach((conflict) => {
-              addConflict(conflict);
-            });
-          }
-          if (Array.isArray(data.errors) && data.errors.length > 0) {
-            const opById = new Map(ops.map((op) => [op.opId, op]));
-            const invalidCollections = new Set();
-            data.errors.forEach((item) => {
-              if (!item || item.error !== "Invalid collection") return;
-              const op = opById.get(item.opId);
-              if (op && op.tableName) invalidCollections.add(op.tableName);
-            });
-            if (invalidCollections.size > 0) {
-              pushWarning = `Sync skipped ${data.errors.length} ops for unsupported collections: ${Array.from(
-                invalidCollections
-              ).join(", ")}`;
-            } else {
-              pushWarning = `Sync skipped ${data.errors.length} ops due to server errors`;
-            }
-          }
-        } else {
-          throw err;
-        }
-      }
+      const pushRes = await pushOpsInBatches(ops);
+      appliedIds = pushRes.appliedIds;
+      conflictIds = pushRes.conflictIds;
+      errorOps = pushRes.errorOps;
+      pushWarning = pushRes.pushWarning;
     }
 
     const removedIds = Array.from(new Set([...appliedIds, ...conflictIds, ...errorOps]));
@@ -514,8 +534,41 @@ async function runPushFull() {
     }
     collections[name] = items;
   });
-  const result = await requestRemote("POST", "/api/sync/full-push", { collections });
-  return result;
+  try {
+    const result = await requestRemote("POST", "/api/sync/full-push", { collections });
+    return result;
+  } catch (err) {
+    if (err && err.status === 413) {
+      // Fallback: batched upserts only (no deletes) to avoid large payloads
+      const ops = [];
+      Object.keys(collections).forEach((name) => {
+        const list = collections[name] || [];
+        list.forEach((item) => {
+          if (!item || item.id == null) return;
+          if (!shouldSyncRecord(name, item.id)) return;
+          const recordId = String(item.id);
+          ops.push({
+            opId: generateOpId(),
+            tableName: name,
+            recordId,
+            op: "upsert",
+            payload: item,
+            baseVersion: getBaseVersion(name, recordId)
+          });
+        });
+      });
+      const res = await pushOpsInBatches(ops);
+      return {
+        ok: true,
+        mode: "upsert-batched",
+        warning: "Full push payload too large; sent batched upserts only (no deletes).",
+        pushed: res.appliedIds.length,
+        conflicts: res.conflictIds.length,
+        errors: res.errorOps.length
+      };
+    }
+    throw err;
+  }
 }
 
 app.get("/api/health", (req, res) => {
