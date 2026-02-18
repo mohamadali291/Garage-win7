@@ -5652,7 +5652,7 @@ function deleteInvoiceFromClientView(invoiceId, clientId) {
                         </tr>
                     </thead>
                     <tbody>
-                        ${invoice.items.map(function(item) {
+                        ${(Array.isArray(invoice.items) ? invoice.items : []).map(function(item) {
                             const qty = Number(item.quantity) || 0;
                             const price = Number(item.price) || 0;
                             return `
@@ -5766,7 +5766,7 @@ function deleteInvoiceFromClientView(invoiceId, clientId) {
                         </tr>
                     </thead>
                     <tbody>
-                        ${invoice.items.map(function(item) {
+                        ${(Array.isArray(invoice.items) ? invoice.items : []).map(function(item) {
                             const qty = Number(item.quantity) || 0;
                             const price = Number(item.price) || 0;
                             return `
@@ -6066,6 +6066,69 @@ if (!window.__togglePaymentHandlerBound) {
     });
 }
 
+function markClientPaid(clientId) {
+    const cid = String(clientId || '');
+    if (!cid) return;
+
+    const run = function() {
+        const today = new Date().toISOString().split('T')[0];
+        const updated = [];
+
+        (invoices || []).forEach(function(inv) {
+            if (!inv || inv.isPayment) return;
+            if (String(inv.clientId || '') !== cid) return;
+
+            const f = getInvoiceFinancials(inv);
+            if (f.status === 'paid') return;
+
+            inv.amountPaid = f.total;
+            inv.paidAt = today;
+
+            const f2 = getInvoiceFinancials(inv);
+            inv.paymentStatus = f2.status;
+            if (inv.paymentStatus !== 'paid') inv.paidAt = null;
+
+            updated.push(inv);
+        });
+
+        if (updated.length === 0) {
+            try { if (typeof uiError === 'function') uiError('No unpaid invoices for this client.'); } catch (e) {}
+            return;
+        }
+
+        try {
+            if (window.garageDB && typeof window.garageDB.upsert === 'function') {
+                updated.forEach(function(inv) { window.garageDB.upsert('invoices', inv); });
+            } else if (typeof dbSetAll === 'function') {
+                dbSetAll('invoices', invoices);
+            } else if (typeof dbPersistAll === 'function') {
+                dbPersistAll();
+            }
+        } catch (e) {}
+
+        renderInvoices();
+        renderInvoiceA();
+        renderClients();
+        renderReportClientBalances();
+    };
+
+    if (typeof uiConfirm === 'function') {
+        uiConfirm('Mark all unpaid invoices as paid for this client?', run);
+    } else {
+        run();
+    }
+}
+
+if (!window.__markClientPaidHandlerBound) {
+    window.__markClientPaidHandlerBound = true;
+    document.addEventListener('click', function(e) {
+        const btn = e.target.closest('.js-mark-client-paid');
+        if (!btn) return;
+        const id = btn.getAttribute('data-client-id');
+        markClientPaid(id);
+    });
+}
+
     // ======= SHOW CLIENT INVOICES (FROM CLIENT TAB) =======
 
 function showClientInvoices(clientId) {
@@ -6089,8 +6152,8 @@ function showClientInvoices(clientId) {
         if (modal && !modal.classList.contains('active')) return;
         const client = clients.find(function(c) { return c.id === clientId; });
         const clientInvoices = invoices.filter(function(inv) { return inv.clientId === clientId; });
-        const standardInvoices = clientInvoices.filter(function(inv){ return !isInvoiceA(inv); });
-        const invoiceAList = clientInvoices.filter(function(inv){ return isInvoiceA(inv); });
+        const standardInvoices = clientInvoices.filter(function(inv){ return !isInvoiceA(inv) && !inv.isPayment; });
+        const invoiceAList = clientInvoices.filter(function(inv){ return isInvoiceA(inv) && !inv.isPayment; });
 
         title.textContent = 'Invoices - ' + (client ? client.name : 'Client');
 
@@ -6112,6 +6175,7 @@ function showClientInvoices(clientId) {
                 const statusText = f.status === 'paid' ? '✓ PAID' : '⏳ UNPAID';
                 const printFn = isA ? 'printInvoiceA' : 'printInvoice';
                 const editFn = isA ? "openModal('invoiceA'," : "openModal('invoice',";
+                const viewFn = isA ? 'openInvoiceASavedModal' : 'openInvoiceSavedModal';
                 return `
                     <tr>
                         <td>${inv.invoiceNumber}</td>
@@ -6122,6 +6186,7 @@ function showClientInvoices(clientId) {
                         <td>${f.remaining.toFixed(2)}</td>
                         <td class="${statusClass}">${statusText}</td>
                         <td class="actions">
+                            <button class="btn btn-secondary btn-small" onclick="${viewFn}(${inv.id})">View</button>
                             <button class="btn btn-success btn-small" onclick="${printFn}(${inv.id})">Print</button>
                             <button class="icon-btn edit" title="Edit" onclick="${editFn} ${inv.id})">✏️</button>
                             <button class="icon-btn delete" title="Delete" onclick="deleteInvoiceFromClientView(${inv.id}, ${clientId})">🗑️</button>
@@ -6210,8 +6275,8 @@ function showClientInvoices(clientId) {
 function printAllClientInvoices(clientId, type) {
     const list = (invoices || []).filter(function(inv) {
         if (inv.clientId !== clientId) return false;
-        if (type === 'A') return isInvoiceA(inv);
-        if (type === 'standard') return !isInvoiceA(inv);
+        if (type === 'A') return isInvoiceA(inv) && !inv.isPayment;
+        if (type === 'standard') return !isInvoiceA(inv) && !inv.isPayment;
         return true;
     });
     if (!list.length) {
@@ -7490,7 +7555,7 @@ function renderEmployees() {
         const nextBtn = document.getElementById('invoicesNextPage');
 
         const sorted = (invoices || []).filter(function(inv) {
-            return !isInvoiceA(inv);
+            return !isInvoiceA(inv) && !inv.isPayment;
         }).slice().sort(function(a, b) {
             return b.id - a.id;
         });
@@ -7515,6 +7580,7 @@ function renderEmployees() {
             const statusButton = f.status === 'paid'
                 ? `<button class="btn btn-warning btn-small js-toggle-payment" data-invoice-id="${safeInvoiceId}">Mark Unpaid</button>`
                 : `<button class="btn btn-success btn-small js-toggle-payment" data-invoice-id="${safeInvoiceId}">Mark Paid</button>`;
+            const viewButton = `<button class="btn btn-secondary btn-small" onclick="openInvoiceSavedModal(${inv.id})">View</button>`;
             
             return `
                 <tr>
@@ -7528,6 +7594,7 @@ function renderEmployees() {
                     <td class="${statusClass}">${statusText}</td>
                     <td class="actions">
                         ${hasPerm("*") ? statusButton : ``}
+                        ${viewButton}
                         <button class="btn btn-success btn-small" onclick="printInvoice(${inv.id})">Print</button>
                         ${hasPerm("*") ? `<button class="icon-btn edit" title="Edit" onclick="openModal(\'invoice\', ${inv.id})">✏️</button>` : ``}
                         ${hasPerm("*") ? `<button class="icon-btn delete" title="Delete" onclick="deleteItem(\'invoice\', ${inv.id})">🗑️</button>` : ``}
@@ -7562,7 +7629,7 @@ function renderEmployees() {
         if (!tbody) return;
 
         const sorted = (invoices || []).filter(function(inv) {
-            return isInvoiceA(inv);
+            return isInvoiceA(inv) && !inv.isPayment;
         }).slice().sort(function(a, b) {
             return b.id - a.id;
         });
@@ -7587,6 +7654,7 @@ function renderEmployees() {
             const statusButton = f.status === 'paid'
                 ? `<button class="btn btn-warning btn-small js-toggle-payment" data-invoice-id="${safeInvoiceId}">Mark Unpaid</button>`
                 : `<button class="btn btn-success btn-small js-toggle-payment" data-invoice-id="${safeInvoiceId}">Mark Paid</button>`;
+            const viewButton = `<button class="btn btn-secondary btn-small" onclick="openInvoiceASavedModal(${inv.id})">View</button>`;
 
             return `
                 <tr>
@@ -7600,6 +7668,7 @@ function renderEmployees() {
                     <td class="${statusClass}">${statusText}</td>
                     <td class="actions">
                         ${hasPerm("*") ? statusButton : ``}
+                        ${viewButton}
                         <button class="btn btn-success btn-small" onclick="printInvoiceA(${inv.id})">Print</button>
                         ${hasPerm("*") ? `<button class="icon-btn edit" title="Edit" onclick="openModal('invoiceA', ${inv.id})">✏️</button>` : ``}
                         ${hasPerm("*") ? `<button class="icon-btn delete" title="Delete" onclick="deleteItem('invoice', ${inv.id})">🗑️</button>` : ``}
@@ -7991,6 +8060,13 @@ function changeInvoicePage(delta) {
     }
 
     // ======= REPORTS =======
+    let reportClientBalancePage = 1;
+    const reportClientBalancePageSize = 10;
+
+    function changeReportClientBalancePage(delta) {
+        reportClientBalancePage = Math.max(1, reportClientBalancePage + delta);
+        renderReportClientBalances();
+    }
 
     function populateReportClientSelect() {
         const select = document.getElementById('reportClientId');
@@ -8074,6 +8150,7 @@ function changeInvoicePage(delta) {
         reportArea.innerHTML = '';
 
         if (type === 'clientBalances') {
+            reportClientBalancePage = 1;
             renderReportClientBalances();
         } else if (type === 'salesSummary') {
             renderReportSalesSummary();
@@ -8104,22 +8181,60 @@ function changeInvoicePage(delta) {
 
     function renderReportClientBalances() {
         const reportArea = document.getElementById('reportArea');
+        const balanceMap = new Map();
+        const paymentMap = new Map();
+        (invoices || []).forEach(function(inv) {
+            if (inv && inv.isPayment) return;
+            const f = getInvoiceFinancials(inv || {});
+            if (f.remaining <= 0) return;
+            const cid = String(inv.clientId || '');
+            if (!cid) return;
+            balanceMap.set(cid, (balanceMap.get(cid) || 0) + f.remaining);
+        });
+        (invoices || []).forEach(function(inv) {
+            if (!inv || !inv.isPayment) return;
+            if (inv.invoiceId) return;
+            const cid = String(inv.clientId || '');
+            if (!cid) return;
+            const rawAmt = (inv.amount !== undefined && inv.amount !== null) ? inv.amount : (inv.paymentAmount !== undefined && inv.paymentAmount !== null ? inv.paymentAmount : 0);
+            const amt = parseFloat(rawAmt) || 0;
+            if (!amt) return;
+            paymentMap.set(cid, (paymentMap.get(cid) || 0) + amt);
+        });
+
         const rows = clients.map(function(c) {
-            const balance = getClientBalance(c.id);
-            if (balance === 0) return null;
+            const cid = String(c.id);
+            const balance = (balanceMap.get(cid) || 0) - (paymentMap.get(cid) || 0);
+            if (balance <= 0) return null;
             return `
                 <tr>
                     <td>${c.name}</td>
                     <td>${c.phone}</td>
                     <td>${balance.toFixed(2)}</td>
+                    <td><button class="btn btn-small btn-success js-mark-client-paid" data-client-id="${c.id}">Mark Paid</button></td>
                 </tr>
             `;
-        }).filter(Boolean).join('');
+        }).filter(Boolean);
 
-        if (!rows) {
+        if (!rows.length) {
             reportArea.innerHTML = '<p>No clients with outstanding balances.</p>';
             return;
         }
+
+        const totalRows = rows.length;
+        const pageCount = Math.ceil(totalRows / reportClientBalancePageSize) || 1;
+        if (reportClientBalancePage > pageCount) reportClientBalancePage = pageCount;
+        if (reportClientBalancePage < 1) reportClientBalancePage = 1;
+
+        const startIndex = (reportClientBalancePage - 1) * reportClientBalancePageSize;
+        const pageRows = rows.slice(startIndex, startIndex + reportClientBalancePageSize).join('');
+        const pagerHtml = totalRows > reportClientBalancePageSize ? `
+            <div class="pager report-pager" style="margin-top:10px;">
+                <button class="btn btn-small" onclick="changeReportClientBalancePage(-1)" ${reportClientBalancePage <= 1 ? 'disabled' : ''}>Prev</button>
+                <span>Page ${reportClientBalancePage} of ${pageCount} (${totalRows} total)</span>
+                <button class="btn btn-small" onclick="changeReportClientBalancePage(1)" ${reportClientBalancePage >= pageCount ? 'disabled' : ''}>Next</button>
+            </div>
+        ` : '';
 
         reportArea.innerHTML = `
             <h3>Client Balances (Unpaid Only)</h3>
@@ -8129,12 +8244,14 @@ function changeInvoicePage(delta) {
                         <th>Client</th>
                         <th>Phone</th>
                         <th>Unpaid Balance</th>
+                        <th>Action</th>
                     </tr>
                 </thead>
                 <tbody>
-                    ${rows}
+                    ${pageRows}
                 </tbody>
             </table>
+            ${pagerHtml}
         `;
     }
 
@@ -8916,4 +9033,7 @@ function changeInvoicePage(delta) {
             </table>
         `;
     }
+
+
+
 
